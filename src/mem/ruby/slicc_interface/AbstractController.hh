@@ -463,6 +463,10 @@ class AbstractController : public ClockedObject, public Consumer
         // Id of the machine from which the request originated.
         MachineID id;
 
+        // Msg id of the MemoryMsg that generated this packet, so that
+        // the memory response inherits the same transaction id.
+        uint64_t msgId = 0;
+
         SenderState(MachineID _id) : id(_id)
         {}
     };

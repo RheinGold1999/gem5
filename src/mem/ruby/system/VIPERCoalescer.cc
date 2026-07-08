@@ -197,6 +197,7 @@ VIPERCoalescer::issueRequest(CoalescedRequest* crequest)
     assert(m_mandatory_q_ptr);
     Tick latency = cyclesToTicks(
         m_controller->mandatoryQueueLatency(crequest->getRubyType()));
+    msg->setFreshMsgId();
     m_mandatory_q_ptr->enqueue(msg, clockEdge(), latency,
                                m_ruby_system->getRandomization(),
                                m_ruby_system->getWarmupEnabled());
@@ -306,6 +307,7 @@ VIPERCoalescer::invTCP()
         assert(m_mandatory_q_ptr != NULL);
         Tick latency = cyclesToTicks(
             m_controller->mandatoryQueueLatency(request_type));
+        msg->setFreshMsgId();
         m_mandatory_q_ptr->enqueue(msg, clockEdge(), latency,
                                    m_ruby_system->getRandomization(),
                                    m_ruby_system->getWarmupEnabled());
@@ -356,6 +358,7 @@ VIPERCoalescer::invTCC(PacketPtr pkt)
     assert(m_mandatory_q_ptr);
     Tick latency = cyclesToTicks(
         m_controller->mandatoryQueueLatency(request_type));
+    msg->setFreshMsgId();
     m_mandatory_q_ptr->enqueue(msg, clockEdge(), latency,
                                m_ruby_system->getRandomization(),
                                m_ruby_system->getWarmupEnabled());

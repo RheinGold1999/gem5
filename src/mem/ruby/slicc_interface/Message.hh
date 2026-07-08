@@ -111,8 +111,26 @@ class Message
     void setMsgCounter(uint64_t c) { m_msg_counter = c; }
     uint64_t getMsgCounter() const { return m_msg_counter; }
     void setMsgId()
-    { if (m_msg_id == 0) { m_msg_id = ++s_msg_id_assigner; } }
+    {
+        if (m_msg_id == 0) {
+            m_msg_id = (s_active_msg_id != 0) ? s_active_msg_id
+                                              : ++s_msg_id_assigner;
+        }
+    }
+    void setMsgId(uint64_t id) { m_msg_id = id; }
     uint64_t getMsgId() const { return m_msg_id; }
+
+    // Force a brand-new id: used at transaction roots (e.g. requests
+    // entering the mandatory queue), so a new request never inherits the
+    // id of the transition that happened to issue it.
+    void setFreshMsgId() { m_msg_id = ++s_msg_id_assigner; }
+
+    // The id of the message that triggered the transition currently being
+    // executed. Messages enqueued while it is set (i.e. from within the
+    // transition's actions) inherit that id, so a whole transaction shares
+    // one id. Set/cleared around doTransition() in slicc-generated wakeup().
+    static void setActiveMsgId(uint64_t id) { s_active_msg_id = id; }
+    static void clearActiveMsgId() { s_active_msg_id = 0; }
 
     // Functions related to network traversal
     virtual const NetDest& getDestination() const
@@ -135,6 +153,7 @@ class Message
     uint64_t m_msg_counter; // FIXME, should this be a 64-bit value?
     uint64_t m_msg_id;
     static inline uint64_t s_msg_id_assigner = 0;
+    static inline uint64_t s_active_msg_id = 0;
 
     // Variables for required network traversal
     int incoming_link;

@@ -295,6 +295,7 @@ AbstractController::serviceMemoryQueue()
     }
 
     SenderState *s = new SenderState(mem_msg->m_Sender);
+    s->msgId = mem_msg->getMsgId();
     pkt->pushSenderState(s);
 
     if (m_ruby_system->getWarmupEnabled()) {
@@ -394,6 +395,7 @@ AbstractController::recvTimingResp(PacketPtr pkt)
 
     SenderState *s = dynamic_cast<SenderState *>(pkt->senderState);
     (*msg).m_OriginalRequestorMachId = s->id;
+    (*msg).setMsgId(s->msgId);
     delete s;
 
     if (pkt->isRead()) {

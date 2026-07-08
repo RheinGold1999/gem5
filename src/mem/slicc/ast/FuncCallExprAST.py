@@ -42,6 +42,7 @@ from slicc.ast.ExprAST import ExprAST
 from slicc.symbols import (
     Func,
     Type,
+    Var,
 )
 
 
@@ -164,6 +165,15 @@ class FuncCallExprAST(ExprAST):
 {
 """
             )
+            # Messages enqueued by the transition's actions inherit the
+            # id of the message that triggered it (see Message.hh), so a
+            # whole transaction chain shares one msg id.
+            if self.symtab.find("in_msg", Var) is not None:
+                code(
+                    """
+    Message::setActiveMsgId(in_msg_ptr->getMsgId());
+"""
+                )
             if machine.TBEType != None and machine.EntryType != None:
                 code(
                     """
@@ -194,6 +204,7 @@ class FuncCallExprAST(ExprAST):
 
             code(
                 """
+    Message::clearActiveMsgId();
     if (result == TransitionResult_Valid) {
         counter++;
         continue; // Check the first port again

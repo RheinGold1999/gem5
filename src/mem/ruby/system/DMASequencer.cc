@@ -159,6 +159,7 @@ DMASequencer::makeRequest(PacketPtr pkt)
     m_outstanding_count++;
 
     assert(m_mandatory_q_ptr != NULL);
+    msg->setFreshMsgId();
     m_mandatory_q_ptr->enqueue(msg, clockEdge(), cyclesToTicks(Cycles(1)),
         m_ruby_system->getRandomization(), m_ruby_system->getWarmupEnabled());
     active_request.bytes_issued += msg->getLen();
@@ -219,6 +220,7 @@ DMASequencer::issueNext(const Addr& address)
     }
 
     assert(m_mandatory_q_ptr != NULL);
+    msg->setFreshMsgId();
     m_mandatory_q_ptr->enqueue(msg, clockEdge(), cyclesToTicks(Cycles(1)),
         m_ruby_system->getRandomization(), m_ruby_system->getWarmupEnabled());
     active_request.bytes_issued += msg->getLen();
