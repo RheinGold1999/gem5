@@ -88,6 +88,15 @@ class Logger
         dprintf_flag(when, name, "", fmt, args...);
     }
 
+    /** Log a single message with file and line */
+    template <typename ...Args>
+    void dprintf_loc(Tick when, const std::string &name,
+                     const char *file, int line, const char *func, const char *fmt,
+                     const Args &...args)
+    {
+        dprintf_flag_loc(when, name, "", file, line, func, fmt, args...);
+    }
+
     /** Log a single message with a flag prefix. */
     template <typename ...Args>
     void dprintf_flag(Tick when, const std::string &name,
@@ -96,18 +105,42 @@ class Logger
     {
         if (!isEnabled(name))
             return;
-        std::ostringstream line;
-        ccprintf(line, fmt, args...);
-        logMessage(when, name, flag, line.str());
+        std::ostringstream line_str;
+        ccprintf(line_str, fmt, args...);
+        logMessage(when, name, flag, line_str.str());
+    }
+
+    /** Log a single message with a flag prefix and file/line */
+    template <typename ...Args>
+    void dprintf_flag_loc(Tick when, const std::string &name,
+            const std::string &flag,
+            const char *file, int line, const char *func,
+            const char *fmt, const Args &...args)
+    {
+        if (!isEnabled(name))
+            return;
+        std::ostringstream line_str;
+        ccprintf(line_str, fmt, args...);
+        logMessage(when, name, flag, line_str.str(), file, line, func);
     }
 
     /** Dump a block of data of length len */
     void dump(Tick when, const std::string &name,
             const void *d, int len, const std::string &flag);
 
+    /** Dump a block of data of length len with file and line */
+    void dump_loc(Tick when, const std::string &name,
+            const void *d, int len, const std::string &flag,
+            const char *file, int line, const char *func);
+
     /** Log formatted message */
     virtual void logMessage(Tick when, const std::string &name,
             const std::string &flag, const std::string &message) = 0;
+
+    /** Log formatted message with file and line */
+    virtual void logMessage(Tick when, const std::string &name,
+            const std::string &flag, const std::string &message,
+            const char *file, int line, const char *func) = 0;
 
     /** Return an ostream that can be used to send messages to
      *  the 'same place' as formatted logMessage messages.  This
@@ -144,6 +177,10 @@ class OstreamLogger : public Logger
 
     void logMessage(Tick when, const std::string &name,
             const std::string &flag, const std::string &message) override;
+
+    void logMessage(Tick when, const std::string &name,
+            const std::string &flag, const std::string &message,
+            const char *file, int line, const char *func) override;
 
     std::ostream &getOstream() override { return stream; }
 };
@@ -202,49 +239,49 @@ struct StringWrap
 
 #define DDUMP(x, data, count) do {               \
     if (GEM5_UNLIKELY(TRACING_ON && ::gem5::debug::x))     \
-        ::gem5::trace::getDebugLogger()->dump(           \
-            ::gem5::curTick(), name(), data, count, #x); \
+        ::gem5::trace::getDebugLogger()->dump_loc(           \
+            ::gem5::curTick(), name(), data, count, #x, __FILE__, __LINE__, __func__); \
 } while (0)
 
 #define DPRINTF(x, ...) do {                     \
     if (GEM5_UNLIKELY(TRACING_ON && ::gem5::debug::x)) {   \
-        ::gem5::trace::getDebugLogger()->dprintf_flag(   \
-            ::gem5::curTick(), name(), #x, __VA_ARGS__); \
+        ::gem5::trace::getDebugLogger()->dprintf_flag_loc(   \
+            ::gem5::curTick(), name(), #x, __FILE__, __LINE__, __func__, __VA_ARGS__); \
     }                                            \
 } while (0)
 
 #define DPRINTFS(x, s, ...) do {                        \
     if (GEM5_UNLIKELY(TRACING_ON && ::gem5::debug::x)) {          \
-        ::gem5::trace::getDebugLogger()->dprintf_flag(          \
-                ::gem5::curTick(), (s)->name(), #x, __VA_ARGS__); \
+        ::gem5::trace::getDebugLogger()->dprintf_flag_loc(          \
+                ::gem5::curTick(), (s)->name(), #x, __FILE__, __LINE__, __func__, __VA_ARGS__); \
     }                                                   \
 } while (0)
 
 #define DPRINTFR(x, ...) do {                          \
     if (GEM5_UNLIKELY(TRACING_ON && ::gem5::debug::x)) {         \
-        ::gem5::trace::getDebugLogger()->dprintf_flag(         \
-            (::gem5::Tick)-1, std::string(), #x, __VA_ARGS__); \
+        ::gem5::trace::getDebugLogger()->dprintf_flag_loc(         \
+            (::gem5::Tick)-1, std::string(), #x, __FILE__, __LINE__, __func__, __VA_ARGS__); \
     }                                                  \
 } while (0)
 
 #define DPRINTFV(x, ...) do {                          \
     if (GEM5_UNLIKELY(TRACING_ON && (x))) {              \
-        ::gem5::trace::getDebugLogger()->dprintf_flag(         \
-            ::gem5::curTick(), name(), x.name(), __VA_ARGS__); \
+        ::gem5::trace::getDebugLogger()->dprintf_flag_loc(         \
+            ::gem5::curTick(), name(), x.name(), __FILE__, __LINE__, __func__, __VA_ARGS__); \
     }                                                  \
 } while (0)
 
 #define DPRINTFN(...) do {                                                \
     if (TRACING_ON) {                                                     \
-        ::gem5::trace::getDebugLogger()->dprintf( \
-            ::gem5::curTick(), name(), __VA_ARGS__); \
+        ::gem5::trace::getDebugLogger()->dprintf_loc( \
+            ::gem5::curTick(), name(), __FILE__, __LINE__, __func__, __VA_ARGS__); \
     }                                                                     \
 } while (0)
 
 #define DPRINTFNR(...) do {                                          \
     if (TRACING_ON) {                                                \
-        ::gem5::trace::getDebugLogger()->dprintf( \
-            (::gem5::Tick)-1, "", __VA_ARGS__); \
+        ::gem5::trace::getDebugLogger()->dprintf_loc( \
+            (::gem5::Tick)-1, "", __FILE__, __LINE__, __func__, __VA_ARGS__); \
     }                                                                \
 } while (0)
 

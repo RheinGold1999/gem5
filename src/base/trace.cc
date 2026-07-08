@@ -115,29 +115,70 @@ Logger::dump(Tick when, const std::string &name,
     int c, i, j;
 
     for (i = 0; i < len; i += 16) {
-        std::ostringstream line;
+        std::ostringstream line_str;
 
-        ccprintf(line, "%08x  ", i);
+        ccprintf(line_str, "%08x  ", i);
         c = len - i;
         if (c > 16) c = 16;
 
         for (j = 0; j < c; j++) {
-            ccprintf(line, "%02x ", data[i + j] & 0xff);
+            ccprintf(line_str, "%02x ", data[i + j] & 0xff);
             if ((j & 0xf) == 7 && j > 0)
-                ccprintf(line, " ");
+                ccprintf(line_str, " ");
         }
 
         for (; j < 16; j++)
-            ccprintf(line, "   ");
-        ccprintf(line, "  ");
+            ccprintf(line_str, "   ");
+        ccprintf(line_str, "  ");
 
         for (j = 0; j < c; j++) {
             int ch = data[i + j] & 0x7f;
-            ccprintf(line, "%c", (char)(isprint(ch) ? ch : ' '));
+            ccprintf(line_str, "%c", (char)(isprint(ch) ? ch : ' '));
         }
 
-        ccprintf(line, "\n");
-        logMessage(when, name, flag, line.str());
+        ccprintf(line_str, "\n");
+        logMessage(when, name, flag, line_str.str());
+
+        if (c < 16)
+            break;
+    }
+}
+
+void
+Logger::dump_loc(Tick when, const std::string &name,
+         const void *d, int len, const std::string &flag,
+         const char *file, int line, const char *func)
+{
+    if (!isEnabled(name))
+        return;
+
+    const char *data = static_cast<const char *>(d);
+    int c, i, j;
+
+    for (i = 0; i < len; i += 16) {
+        std::ostringstream line_str;
+
+        ccprintf(line_str, "%08x  ", i);
+        c = len - i;
+        if (c > 16) c = 16;
+
+        for (j = 0; j < c; j++) {
+            ccprintf(line_str, "%02x ", data[i + j] & 0xff);
+            if ((j & 0xf) == 7 && j > 0)
+                ccprintf(line_str, " ");
+        }
+
+        for (; j < 16; j++)
+            ccprintf(line_str, "   ");
+        ccprintf(line_str, "  ");
+
+        for (j = 0; j < c; j++) {
+            int ch = data[i + j] & 0x7f;
+            ccprintf(line_str, "%c", (char)(isprint(ch) ? ch : ' '));
+        }
+
+        ccprintf(line_str, "\n");
+        logMessage(when, name, flag, line_str.str(), file, line, func);
 
         if (c < 16)
             break;
@@ -153,6 +194,39 @@ OstreamLogger::logMessage(Tick when, const std::string &name,
 
     if (!debug::FmtTicksOff && (when != MaxTick))
         ccprintf(stream, "%7d: ", when);
+
+    if (debug::FmtFlag && !flag.empty())
+        stream << flag << ": ";
+
+    if (!name.empty())
+        stream << name << ": ";
+
+    stream << message;
+    stream.flush();
+
+    if (debug::FmtStackTrace) {
+        print_backtrace();
+        STATIC_ERR("\n");
+    }
+}
+
+void
+OstreamLogger::logMessage(Tick when, const std::string &name,
+        const std::string &flag, const std::string &message,
+        const char *file, int line, const char *func)
+{
+    if (!isEnabled(name))
+        return;
+
+    if (!debug::FmtTicksOff && (when != MaxTick))
+        ccprintf(stream, "%7d: ", when);
+
+    if (file && line != -1) {
+        stream << file << ":" << line;
+        if (func)
+            stream << " " << func;
+        stream << ": ";
+    }
 
     if (debug::FmtFlag && !flag.empty())
         stream << flag << ": ";
