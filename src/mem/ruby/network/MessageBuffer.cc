@@ -282,6 +282,7 @@ MessageBuffer::enqueue(MsgPtr message, Tick current_time, Tick delta,
     msg_ptr->updateDelayedTicks(current_time);
     msg_ptr->setLastEnqueueTime(arrival_time);
     msg_ptr->setMsgCounter(m_msg_counter);
+    msg_ptr->setMsgId();
 
     // Insert the message into the priority heap
     m_prio_heap.push_back(message);

@@ -66,7 +66,7 @@ class Message
         : m_block_size(block_size),
           m_time(curTime),
           m_LastEnqueueTime(curTime),
-          m_DelayedTicks(0), m_msg_counter(0)
+          m_DelayedTicks(0), m_msg_counter(0), m_msg_id(0)
     { }
 
     Message(const Message &other) = default;
@@ -110,6 +110,9 @@ class Message
     Tick getTime() const { return m_time; }
     void setMsgCounter(uint64_t c) { m_msg_counter = c; }
     uint64_t getMsgCounter() const { return m_msg_counter; }
+    void setMsgId()
+    { if (m_msg_id == 0) { m_msg_id = ++s_msg_id_assigner; } }
+    uint64_t getMsgId() const { return m_msg_id; }
 
     // Functions related to network traversal
     virtual const NetDest& getDestination() const
@@ -130,6 +133,8 @@ class Message
     Tick m_LastEnqueueTime; // my last enqueue time
     Tick m_DelayedTicks; // my delayed cycles
     uint64_t m_msg_counter; // FIXME, should this be a 64-bit value?
+    uint64_t m_msg_id;
+    static inline uint64_t s_msg_id_assigner = 0;
 
     // Variables for required network traversal
     int incoming_link;

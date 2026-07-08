@@ -627,14 +627,16 @@ ${{self.c_ident}}::print(std::ostream& out) const
 
         # For each field
         code.indent()
+        if self.isMessage:
+            code('out << "MsgId=" << getMsgId() << " ";')
         for dm in self.data_members.values():
             if dm.type.c_ident == "Addr":
                 code(
                     """
-out << "${{dm.ident}} = " << printAddress(m_${{dm.ident}}, block_size_bits) << " ";"""
+out << "${{dm.ident}}=" << printAddress(m_${{dm.ident}}, block_size_bits) << " ";"""
                 )
             else:
-                code('out << "${{dm.ident}} = " << m_${{dm.ident}} << " ";' "")
+                code('out << "${{dm.ident}}=" << m_${{dm.ident}} << " ";' "")
 
         code.dedent()
 

@@ -54,15 +54,16 @@ void
 RubyRequest::print(std::ostream& out) const
 {
   out << "[RubyRequest: ";
-  out << std::hex << "LineAddress = 0x" << m_LineAddress << std::dec << " ";
-  out << std::hex << "PhysicalAddress = 0x" << m_PhysicalAddress;
-  out << std::dec << " " << "Type = " << m_Type << " ";
-  out << std::hex << "ProgramCounter = 0x" << m_ProgramCounter << std::dec;
-  out << " " << "AccessMode = " << m_AccessMode << " ";
-  out << "Size = " << m_Size << " ";
-  out << "Prefetch = " << m_Prefetch << " ";
-  out << "isGLCSet = " << m_isGLCSet << "";
-  out << "isSLCSet = " << m_isSLCSet << "";
+  out << "MsgId=" << getMsgId() << " ";
+  out << std::hex << "LineAddress=0x" << m_LineAddress << std::dec << " ";
+  out << std::hex << "PhysicalAddress=0x" << m_PhysicalAddress;
+  out << std::dec << " " << "Type=" << m_Type << " ";
+  out << std::hex << "ProgramCounter=0x" << m_ProgramCounter << std::dec;
+  out << " " << "AccessMode=" << m_AccessMode << " ";
+  out << "Size=" << m_Size << " ";
+  out << "Prefetch=" << m_Prefetch << " ";
+  out << "isGLCSet=" << m_isGLCSet << "";
+  out << "isSLCSet=" << m_isSLCSet << "";
   //  out << "Time = " << getTime() << " ";
   out << "]";
 }

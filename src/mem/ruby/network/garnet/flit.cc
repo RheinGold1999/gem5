@@ -109,7 +109,10 @@ flit::deserialize(int des_id, int num_flits, uint32_t bWidth)
 void
 flit::print(std::ostream& out) const
 {
-    out << "[flit:: ";
+    assert(m_msg_ptr);
+
+    out << " [flit: ";
+    out << "MsgId=" << m_msg_ptr->getMsgId() << " ";
     out << "PacketId=" << m_packet_id << " ";
     out << "Id=" << m_id << " ";
     out << "Type=" << m_type << " ";
