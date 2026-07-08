@@ -27,13 +27,15 @@
 # Author: Tushar Krishna
 
 import argparse
+import math
 import os
 import sys
 
 import m5
 from m5.defines import buildEnv
 from m5.objects import *
-from m5.util import addToPath
+from m5.util import addToPath, fatal, warn
+from m5.util.convert import toMemorySize
 
 addToPath("../")
 
@@ -120,12 +122,127 @@ parser.add_argument(
                         Set to -1 to inject randomly in all vnets.",
 )
 
+parser.add_argument(
+    "--lines-per-dest",
+    type=int,
+    default=1024,
+    help="Number of distinct cache lines used per destination.\
+                        Spreads traffic over many lines to reduce\
+                        same-line conflicts when a real coherence\
+                        protocol is used. Set to 1 for the legacy\
+                        one-line-per-destination encoding. Must keep\
+                        block_offset(6) + log2(num-dirs) +\
+                        log2(lines-per-dest) below Ruby's xor_low_bit\
+                        (default 20).",
+)
+
 #
 # Add the ruby specific and protocol specific options
 #
 Ruby.define_options(parser)
 
 args = parser.parse_args()
+
+
+def check_address_encoding(args):
+    """Validate the synthetic-traffic address encoding.
+
+    The tester encodes the destination directory in the address bits right
+    above the block offset, and --lines-per-dest adds random line-select
+    bits above the destination bits:
+
+        [ ... | line_sel | destination | block offset ]
+
+    These random bits must stay below the directory mapping's XOR-hash
+    bits (--xor-low-bit) and within the memory size, otherwise packets are
+    silently routed to a different directory than the traffic pattern
+    intended (uniform_random still looks uniform, but transpose/neighbor/
+    single-dest etc. get distorted and per-destination stats become wrong).
+    """
+    block_offset_bits = int(math.log2(args.cacheline_size))
+    dest_bits = max(1, math.ceil(math.log2(args.num_dirs)))
+    line_bits = math.ceil(math.log2(args.lines_per_dest))
+    addr_bits_used = block_offset_bits + dest_bits + line_bits
+    mem_bits = int(math.log2(toMemorySize(args.mem_size)))
+
+    if args.lines_per_dest < 1:
+        fatal(
+            "--lines-per-dest=%d is invalid: must be >= 1 "
+            "(1 = legacy one-line-per-destination encoding).",
+            args.lines_per_dest,
+        )
+
+    if 2 ** int(math.log2(args.num_dirs)) != args.num_dirs:
+        fatal(
+            "--num-dirs=%d is not a power of two: the destination cannot "
+            "be encoded in dedicated address bits, so packets would not "
+            "map one-to-one onto directories. Choose a power of two.",
+            args.num_dirs,
+        )
+
+    if args.xor_low_bit > 0 and addr_bits_used > args.xor_low_bit:
+        max_lines = 2 ** (args.xor_low_bit - block_offset_bits - dest_bits)
+        fatal(
+            "--lines-per-dest=%d needs address bits [0, %d), but the "
+            "directory mapping XOR-hashes bits [%d, %d) into the "
+            "destination-select bits (dir = addr[%d:%d] ^ addr[%d:%d]). "
+            "The random line-select bits would spill into the hash bits "
+            "and packets would be silently routed to the wrong directory. "
+            "Fix one of:\n"
+            "  1. reduce --lines-per-dest to <= %d;\n"
+            "  2. raise --xor-low-bit to >= %d (must stay <= %d for "
+            "--mem-size=%s);\n"
+            "  3. set --xor-low-bit=0 to disable XOR hashing entirely.",
+            args.lines_per_dest,
+            addr_bits_used,
+            args.xor_low_bit,
+            args.xor_low_bit + dest_bits,
+            block_offset_bits + dest_bits - 1,
+            block_offset_bits,
+            args.xor_low_bit + dest_bits - 1,
+            args.xor_low_bit,
+            max_lines,
+            addr_bits_used,
+            mem_bits - dest_bits,
+            args.mem_size,
+        )
+
+    if addr_bits_used > mem_bits:
+        max_lines = 2 ** (mem_bits - block_offset_bits - dest_bits)
+        fatal(
+            "--lines-per-dest=%d needs address bits [0, %d), which "
+            "exceeds --mem-size=%s (%d address bits): generated addresses "
+            "would fall outside memory. Fix one of:\n"
+            "  1. reduce --lines-per-dest to <= %d;\n"
+            "  2. increase --mem-size to >= %s.",
+            args.lines_per_dest,
+            addr_bits_used,
+            args.mem_size,
+            mem_bits,
+            max_lines,
+            f"{2 ** addr_bits_used // 2 ** 20}MB",
+        )
+
+    working_set = args.num_dirs * args.lines_per_dest * args.cacheline_size
+    l1_size = toMemorySize(args.l1d_size)
+    if l1_size < working_set:
+        warn(
+            "L1 size %s is smaller than the synthetic-traffic working set "
+            "(%d dirs x %d lines x %dB = %dKiB): capacity/set-conflict "
+            "replacements will add PUTX writeback traffic to the network. "
+            "For replacement-free traffic use --l1d_size=%dKiB (with "
+            "--l1d_assoc>=2 the dense address encoding then maps exactly "
+            "assoc lines to every set).",
+            args.l1d_size,
+            args.num_dirs,
+            args.lines_per_dest,
+            args.cacheline_size,
+            working_set // 1024,
+            working_set // 1024,
+        )
+
+
+check_address_encoding(args)
 
 cpus = [
     GarnetSyntheticTraffic(
@@ -138,6 +255,8 @@ cpus = [
         inj_vnet=args.inj_vnet,
         precision=args.precision,
         num_dest=args.num_dirs,
+        lines_per_dest=args.lines_per_dest,
+        block_offset=int(math.log2(args.cacheline_size)),
     )
     for i in range(args.num_cpus)
 ]

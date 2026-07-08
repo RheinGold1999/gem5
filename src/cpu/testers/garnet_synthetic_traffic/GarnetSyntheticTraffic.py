@@ -38,6 +38,14 @@ class GarnetSyntheticTraffic(ClockedObject):
 
     block_offset = Param.Int(6, "block offset in bits")
     num_dest = Param.Int(1, "Number of Destinations")
+    lines_per_dest = Param.Int(
+        1,
+        "Number of distinct cache lines used per destination. The random "
+        "line-select bits are placed right above the destination bits, so "
+        "block_offset + ceilLog2(num_dest) + ceilLog2(lines_per_dest) must "
+        "stay below any address-hashing bits of the directory mapping "
+        "(e.g. Ruby's xor_low_bit, default 20) and within memory size.",
+    )
     memory_size = Param.Int(65536, "memory size")
     sim_cycles = Param.Int(1000, "Number of simulation cycles")
     num_packets_max = Param.Int(

@@ -34,6 +34,7 @@
 #include <string>
 #include <vector>
 
+#include "base/intmath.hh"
 #include "base/logging.hh"
 #include "base/statistics.hh"
 #include "debug/GarnetSyntheticTraffic.hh"
@@ -80,6 +81,7 @@ GarnetSyntheticTraffic::GarnetSyntheticTraffic(const Params &p)
       size(p.memory_size),
       blockSizeBits(p.block_offset),
       numDestinations(p.num_dest),
+      linesPerDest(p.lines_per_dest),
       simCycles(p.sim_cycles),
       numPacketsMax(p.num_packets_max),
       numPacketsSent(0),
@@ -244,8 +246,19 @@ GarnetSyntheticTraffic::generatePkt()
 
     // The source of the packets is a cache.
     // The destination of the packets is a directory.
-    // The destination bits are embedded in the address after byte-offset.
-    Addr paddr =  destination;
+    // The destination bits are embedded in the address after byte-offset,
+    // matching the directories' block-interleaved address mapping.
+    // With lines_per_dest > 1, random line-select bits are placed right
+    // above the destination bits so that packets to one destination spread
+    // over many cache lines instead of all hitting the same line. These
+    // bits change the line but not the home directory, as long as they
+    // stay below any address-hashing bits of the directory mapping
+    // (e.g. Ruby's xor_low_bit, default 20).
+    Addr paddr = destination;
+    if (linesPerDest > 1) {
+        Addr line_sel = rng->random<unsigned>(0, linesPerDest - 1);
+        paddr |= line_sel << ceilLog2(numDestinations);
+    }
     paddr <<= blockSizeBits;
     unsigned access_size = 1; // Does not affect Ruby simulation
 
