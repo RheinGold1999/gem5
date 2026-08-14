@@ -41,6 +41,7 @@ import datetime
 import os
 import runpy
 import socket
+import subprocess
 import sys
 
 __all__ = ["options", "arguments", "main"]
@@ -566,6 +567,19 @@ def main():
 
     # tell C++ about output directory
     core.setOutputDir(options.outdir)
+
+    # save the command line to command.txt in the output directory
+    cmd_file = os.path.join(options.outdir, "command.txt")
+    try:
+        git_commit = subprocess.check_output(
+            ["git", "rev-parse", "HEAD"], cwd=os.path.dirname(__file__),
+            stderr=subprocess.DEVNULL,
+        ).decode().strip()
+    except Exception:
+        git_commit = "unknown"
+    with open(cmd_file, "w") as f:
+        f.write(f"git: {git_commit}\n")
+        f.write(" ".join(map(quote, sys.argv)) + "\n")
 
     # update the system path with elements from the -p option
     sys.path[0:0] = options.path
