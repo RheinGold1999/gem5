@@ -136,6 +136,20 @@ parser.add_argument(
                         (default 20).",
 )
 
+parser.add_argument(
+    "--data-msg-size",
+    type=int,
+    default=64,
+    help="Data-message payload size in bytes for the network (default 64).\
+                        Garnet sizes a packet's flit count as\
+                        ceil((data_msg_size + control_msg_size) / flit_size),\
+                        with control_msg_size=8 and flit_size=16 by default,\
+                        so the default gives (64+8)/16 = 5 flits for a data\
+                        (ST/response vnet) packet and 8/16 = 1 flit for\
+                        control packets. Lower it to make data packets 1 flit\
+                        (e.g. --data-msg-size 8 -> (8+8)/16 = 1 flit).",
+)
+
 #
 # Add the ruby specific and protocol specific options
 #
@@ -272,12 +286,20 @@ system.clk_domain = SrcClockDomain(
     clock=args.sys_clock, voltage_domain=system.voltage_domain
 )
 
+breakpoint()
+
 Ruby.create_system(args, False, system)
 
 # Create a seperate clock domain for Ruby
 system.ruby.clk_domain = SrcClockDomain(
     clock=args.ruby_clock, voltage_domain=system.voltage_domain
 )
+
+# Override the network data-message size. The Garnet NI sizes a packet as
+# ceil((data_msg_size + control_msg_size) / flit_size) flits, so with the
+# default 64 data packets are 5 flits; pass --data-msg-size 8 to make them
+# 1 flit (control packets are always 1 flit).
+system.ruby.network.data_msg_size = args.data_msg_size
 
 i = 0
 for ruby_port in system.ruby._cpu_ports:
@@ -298,9 +320,11 @@ root.system.mem_mode = "timing"
 m5.ticks.setGlobalFrequency("1ps")
 
 # instantiate configuration
+breakpoint()
 m5.instantiate()
 
 # simulate until program terminates
+breakpoint()
 exit_event = m5.simulate(args.abs_max_tick)
 
 print("Exiting @ tick", m5.curTick(), "because", exit_event.getCause())

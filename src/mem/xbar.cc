@@ -373,7 +373,7 @@ BaseXBar::findPort(AddrRange addr_range, PacketPtr pkt)
 void
 BaseXBar::recvRangeChange(PortID mem_side_port_id)
 {
-    DPRINTF(AddrRanges, "Received range change from cpu_side_ports %s\n",
+    DPRINTF(AddrRanges, "Received range change from mem_side_ports %s\n",
             memSidePorts[mem_side_port_id]->getPeer());
 
     // remember that we got a range from this memory-side port and thus the

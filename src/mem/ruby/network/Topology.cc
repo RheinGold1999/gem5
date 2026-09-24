@@ -275,7 +275,7 @@ Topology::makeLink(Network *net, SwitchID src, SwitchID dest,
                 net->makeExtInLink(src, dest - (2 * m_nodes), link,
                                 routing_table_entry);
             } else {
-                for (int v = 0; v< link->mVnets.size(); v++) {
+                for (int v = 0; v < link->mVnets.size(); v++) {
                     int vnet = link->mVnets[v];
                     linkRoute[vnet] = routing_table_entry[vnet];
                 }

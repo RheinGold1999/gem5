@@ -113,8 +113,8 @@ RoutingUnit::lookupRoutingTable(int vnet, NetDest msg_destination)
         if (msg_destination.intersectionIsNotEmpty(
             m_routing_table[vnet][link])) {
 
-        if (m_weight_table[link] <= min_weight)
-            min_weight = m_weight_table[link];
+            if (m_weight_table[link] <= min_weight)
+                min_weight = m_weight_table[link];
         }
     }
 

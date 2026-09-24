@@ -456,6 +456,7 @@ NetworkInterface::flitisizeMessage(MsgPtr msg_ptr, int vnet)
 
             fl->set_src_delay(curTick() - msg_ptr->getTime());
             niOutVcs[vc].insert(fl);
+            DPRINTF(RubyNetwork, "Creating flit: %s\n", (*fl));
         }
 
         m_ni_out_vcs_enqueue_time[vc] = curTick();
