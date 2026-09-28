@@ -87,6 +87,9 @@ GarnetSyntheticTraffic::GarnetSyntheticTraffic(const Params &p)
       numPacketsSent(0),
       singleSender(p.single_sender),
       singleDest(p.single_dest),
+      numColumns(p.num_columns),
+      activeColumns(p.active_columns),
+      activeRows(p.active_rows),
       trafficType(p.traffic_type),
       injRate(p.inj_rate),
       injVnet(p.inj_vnet),
@@ -103,6 +106,12 @@ GarnetSyntheticTraffic::GarnetSyntheticTraffic(const Params &p)
         fatal("Unknown Traffic Type: %s!\n", traffic);
     }
     traffic = trafficStringToEnum[trafficType];
+
+    // One-time validation: active-column/row masking can only re-draw a
+    // uniformly-random destination, so all other patterns are rejected here.
+    if (activeColumns > 0 || activeRows > 0) {
+        assert(traffic == UNIFORM_RANDOM_);
+    }
 
     id = TESTER_NETWORK++;
     // Initialize random generator with unique seed based on tester ID
@@ -195,11 +204,20 @@ GarnetSyntheticTraffic::generatePkt()
     int src_x = id%radix;
     int src_y = id/radix;
 
+    // Condition 1: sources outside the active (row, col) region never inject.
+    if (activeColumns > 0 || activeRows > 0) {
+        if (!active(id))
+            return;
+    }
+
     if (singleDest >= 0)
     {
         destination = singleDest;
     } else if (traffic == UNIFORM_RANDOM_) {
-        destination = rng->random<unsigned>(0, num_destinations - 1);
+        // Condition 2: re-draw until the destination is inside the active region.
+        do {
+            destination = rng->random<unsigned>(0, num_destinations - 1);
+        } while (!active(destination));
     } else if (traffic == BIT_COMPLEMENT_) {
         dest_x = radix - src_x - 1;
         dest_y = radix - src_y - 1;
@@ -348,6 +366,16 @@ GarnetSyntheticTraffic::initTrafficType()
     trafficStringToEnum["tornado"] = TORNADO_;
     trafficStringToEnum["transpose"] = TRANSPOSE_;
     trafficStringToEnum["uniform_random"] = UNIFORM_RANDOM_;
+}
+
+bool
+GarnetSyntheticTraffic::active(int n) const
+{
+    if (activeColumns > 0 && n % numColumns >= activeColumns)
+        return false;
+    if (activeRows > 0 && n / numColumns >= activeRows)
+        return false;
+    return true;
 }
 
 void

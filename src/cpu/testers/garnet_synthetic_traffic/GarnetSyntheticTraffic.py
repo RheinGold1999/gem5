@@ -63,6 +63,22 @@ class GarnetSyntheticTraffic(ClockedObject):
         "Send only to this dest. \
                                  Default depends on traffic_type",
     )
+    num_columns = Param.Int(
+        1,
+        "Mesh columns (num_dirs / mesh_rows), e.g. 8 for a 4x8 fabric. "
+        "Used to resolve a node id to (col, row) for active-column/row masking.",
+    )
+    active_columns = Param.Int(
+        0,
+        "Only col < active_columns send/receive. 0 = no column limit.",
+    )
+    active_rows = Param.Int(
+        0,
+        "Only row < active_rows send/receive. 0 = no row limit. "
+        "Together with active_columns these mask a rectangular region, e.g. "
+        "emulate a 4x6 mesh on a 4x8 fabric: active_columns=6, "
+        "active_rows=4.",
+    )
     traffic_type = Param.String("uniform_random", "Traffic type")
     inj_rate = Param.Float(0.1, "Packet injection rate")
     inj_vnet = Param.Int(

@@ -150,6 +150,23 @@ parser.add_argument(
                         (e.g. --data-msg-size 8 -> (8+8)/16 = 1 flit).",
 )
 
+parser.add_argument(
+    "--num-active-columns",
+    type=int,
+    default=0,
+    help="Only nodes in the first N columns send/receive. 0 disables. Emulates "
+                        "a narrower mesh on a wider fabric, e.g. --mesh-rows 4 "
+                        "--num-dirs 32 --num-active-columns 6 --num-active-rows 4 "
+                        "-> a 4x6 mesh on a 4x8 fabric.",
+)
+
+parser.add_argument(
+    "--num-active-rows",
+    type=int,
+    default=0,
+    help="Only nodes in the first N rows send/receive. 0 disables.",
+)
+
 #
 # Add the ruby specific and protocol specific options
 #
@@ -265,6 +282,9 @@ cpus = [
         single_dest=args.single_dest_id,
         sim_cycles=args.sim_cycles,
         traffic_type=args.synthetic,
+        num_columns=args.num_dirs // args.mesh_rows,
+        active_columns=args.num_active_columns,
+        active_rows=args.num_active_rows,
         inj_rate=args.injectionrate,
         inj_vnet=args.inj_vnet,
         precision=args.precision,

@@ -126,6 +126,9 @@ class GarnetSyntheticTraffic : public ClockedObject
     int numPacketsSent;
     int singleSender;
     int singleDest;
+    int numColumns;
+    int activeColumns;
+    int activeRows;
 
     std::string trafficType; // string
     TrafficType traffic; // enum from string
@@ -144,6 +147,9 @@ class GarnetSyntheticTraffic : public ClockedObject
     void generatePkt();
     void sendPkt(PacketPtr pkt);
     void initTrafficType();
+
+    // True if a node/destination lies inside the active (col, row) region.
+    bool active(int n) const;
 
     void doRetry();
 
