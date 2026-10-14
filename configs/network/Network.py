@@ -117,6 +117,13 @@ def define_options(parser):
         help="network-level deadlock threshold.",
     )
     parser.add_argument(
+        "--age-based-arbiter",
+        action="store_true",
+        default=False,
+        help="""use age-based (oldest-first) switch arbitration in garnet
+            instead of the default round-robin arbitration.""",
+    )
+    parser.add_argument(
         "--simple-physical-channels",
         action="store_true",
         default=False,
@@ -172,6 +179,7 @@ def init_network(options, network, InterfaceClass):
         network.ni_flit_size = options.link_width_bits / 8
         network.routing_algorithm = options.routing_algorithm
         network.garnet_deadlock_threshold = options.garnet_deadlock_threshold
+        network.age_based_arbiter = options.age_based_arbiter
 
         # Create Bridges and connect them to the corresponding links
         for intLink in network.int_links:
