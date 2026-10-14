@@ -70,7 +70,7 @@ def define_options(parser):
         "--ruby-clock",
         action="store",
         type=str,
-        default="2GHz",
+        default="1GHz",
         help="Clock for blocks running at Ruby system's speed",
     )
 
