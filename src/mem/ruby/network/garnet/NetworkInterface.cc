@@ -168,6 +168,14 @@ NetworkInterface::incrementStats(flit *t_flit)
     m_net_ptr->increment_flit_network_latency(network_delay, vnet);
     m_net_ptr->increment_flit_queueing_latency(queueing_delay, vnet);
 
+    // Whole lifetime of this flit: source-NI message enqueue (msg time) ->
+    // dest-NI dequeue + drain of the dest-NI out queue. network_delay had
+    // the final link cycle subtracted, so add it back: sum = curTick() -
+    // msg_ptr->getTime(). Used for the flit_lifetime median/p75/max stats.
+    Tick flit_lifetime = src_queueing_delay + network_delay +
+        dest_queueing_delay + cyclesToTicks(Cycles(1));
+    m_net_ptr->increment_flit_lifetime(flit_lifetime, vnet);
+
     if (t_flit->get_type() == TAIL_ || t_flit->get_type() == HEAD_TAIL_) {
         m_net_ptr->increment_received_packets(vnet);
         m_net_ptr->increment_packet_network_latency(network_delay, vnet);

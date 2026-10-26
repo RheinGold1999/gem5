@@ -86,6 +86,9 @@ InputUnit::wakeup()
         assert(t_flit->m_width == m_router->getBitWidth());
         int vc = t_flit->get_vc();
         t_flit->increment_hops(); // for stats
+        // Mark the cycle this flit entered this router (used for the
+        // per-router flit residence latency stats).
+        t_flit->set_enter_cycle(m_router->curCycle());
 
         if ((t_flit->get_type() == HEAD_) ||
             (t_flit->get_type() == HEAD_TAIL_)) {

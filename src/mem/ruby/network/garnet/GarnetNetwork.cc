@@ -31,6 +31,8 @@
 
 #include "mem/ruby/network/garnet/GarnetNetwork.hh"
 
+#include <algorithm>
+#include <cmath>
 #include <cassert>
 
 #include "base/cast.hh"
@@ -55,6 +57,22 @@ namespace ruby
 namespace garnet
 {
 
+// Empirical quantile of a SORTED sample, linear interpolation between
+// adjacent order statistics (numpy's default): q*(n-1) -> floor/ceil mix.
+static double
+quantile(const std::vector<uint32_t>& sorted, double q)
+{
+    const size_t n = sorted.size();
+    assert(n > 0);
+    double idx = q * (n - 1);
+    size_t lo = (size_t)std::floor(idx);
+    size_t hi = (size_t)std::ceil(idx);
+    if (lo == hi)
+        return sorted[lo];
+    double frac = idx - lo;
+    return sorted[lo] + frac * (sorted[hi] - sorted[lo]);
+}
+
 /*
  * GarnetNetwork sets up the routers and links and collects stats.
  * Default parameters (GarnetNetwork.py) can be overwritten from command line
@@ -70,7 +88,7 @@ GarnetNetwork::GarnetNetwork(const Params &p)
     m_buffers_per_data_vc = p.buffers_per_data_vc;
     m_buffers_per_ctrl_vc = p.buffers_per_ctrl_vc;
     m_routing_algorithm = p.routing_algorithm;
-    m_age_based_arbiter = p.age_based_arbiter;
+    m_switch_arbiter = (SwitchArbiterPolicy)p.switch_arbiter;
     m_next_packet_id = 0;
 
     m_enable_fault_model = p.enable_fault_model;
@@ -475,11 +493,30 @@ GarnetNetwork::regStats()
         .flags(statistics::oneline)
         ;
 
+    m_flit_lifetime
+        .init(m_virtual_networks)
+        .name(name() + ".flit_lifetime")
+        .flags(statistics::oneline)
+        ;
+
+    m_flit_lifetime_median
+        .name(name() + ".flit_lifetime_median")
+        ;
+
+    m_flit_lifetime_p75
+        .name(name() + ".flit_lifetime_p75")
+        ;
+
+    m_flit_lifetime_max
+        .name(name() + ".flit_lifetime_max")
+        ;
+
     for (int i = 0; i < m_virtual_networks; i++) {
         m_flits_received.subname(i, csprintf("vnet-%i", i));
         m_flits_injected.subname(i, csprintf("vnet-%i", i));
         m_flit_network_latency.subname(i, csprintf("vnet-%i", i));
         m_flit_queueing_latency.subname(i, csprintf("vnet-%i", i));
+        m_flit_lifetime.subname(i, csprintf("vnet-%i", i));
     }
 
     m_avg_flit_vnet_latency
@@ -581,11 +618,22 @@ GarnetNetwork::collateStats()
     for (int i = 0; i < m_routers.size(); i++) {
         m_routers[i]->collateStats();
     }
+
+    // Whole-lifetime distribution of the delivered flits (see
+    // NetworkInterface::incrementStats): median / p75 / max, in ticks.
+    std::vector<uint32_t>& s = m_flit_lifetime_samples;
+    std::sort(s.begin(), s.end());
+    if (!s.empty()) {
+        m_flit_lifetime_median = quantile(s, 0.5);
+        m_flit_lifetime_p75 = quantile(s, 0.75);
+        m_flit_lifetime_max = s.back();
+    }
 }
 
 void
 GarnetNetwork::resetStats()
 {
+    m_flit_lifetime_samples.clear();
     for (int i = 0; i < m_routers.size(); i++) {
         m_routers[i]->resetStats();
     }

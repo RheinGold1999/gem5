@@ -53,6 +53,15 @@ enum link_type { EXT_IN_, EXT_OUT_, INT_, NUM_LINK_TYPES_ };
 enum RoutingAlgorithm { TABLE_ = 0, XY_ = 1, CUSTOM_ = 2,
                         NUM_ROUTING_ALGORITHM_};
 
+// Switch (SA) arbitration policies used by SwitchAllocator.
+// ROUND_ROBIN_: default round-robin arbitration.
+// ROUTER_AGE_: oldest-first, based on the time the head flit was
+//              enqueued at this router's input unit (local age).
+// GLOBAL_AGE_: oldest-first, based on the time the flit was enqueued
+//              at the source network interface (end-to-end age).
+enum SwitchArbiterPolicy { ROUND_ROBIN_ = 0, ROUTER_AGE_ = 1,
+                           GLOBAL_AGE_ = 2, NUM_SWITCH_ARBITER_ };
+
 struct RouteInfo
 {
     RouteInfo()

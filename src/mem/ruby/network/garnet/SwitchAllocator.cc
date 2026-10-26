@@ -62,7 +62,7 @@ SwitchAllocator::init()
 {
     m_num_inports = m_router->get_num_inports();
     m_num_outports = m_router->get_num_outports();
-    m_age_based_arbiter = m_router->get_net_ptr()->getAgeBasedArbiter();
+    m_switch_arbiter = m_router->get_net_ptr()->getSwitchArbiter();
     m_round_robin_inport.resize(m_num_outports);
     m_round_robin_invc.resize(m_num_inports);
     m_port_requests.resize(m_num_inports);
@@ -100,12 +100,16 @@ SwitchAllocator::wakeup()
 
 /*
  * SA-I (or SA-i) loops through all input VCs at every input port,
- * and selects one. Two arbitration policies are supported:
+ * and selects one. Three arbitration policies are supported:
  *   - Round-robin: the first sendable VC starting from the round-robin
  *     pointer wins.
- *   - Age-based: the sendable VC whose packet has been waiting at this
- *     router the longest (smallest enqueue time) wins. Ties are broken
- *     starting from the round-robin pointer.
+ *   - Router age-based: the sendable VC whose packet has been waiting at
+ *     this router the longest (smallest enqueue time at this router's
+ *     input unit) wins. Ties are broken starting from the round-robin
+ *     pointer.
+ *   - Global age-based: the sendable VC whose flit was enqueued at the
+ *     source network interface the earliest (end-to-end age) wins.
+ *     Ties are broken starting from the round-robin pointer.
  *    - For HEAD/HEAD_TAIL flits only selects an input VC whose output port
  *     has at least one free output VC.
  *    - For BODY/TAIL flits, only selects an input VC that has credits
@@ -142,9 +146,14 @@ SwitchAllocator::arbitrate_inports()
             if (!send_allowed(inport, invc, outport, outvc))
                 continue;
 
-            if (m_age_based_arbiter) {
-                // age-based: keep the VC that arrived at this router first
-                Tick enqueue_time = input_unit->get_enqueue_time(invc);
+            if (m_switch_arbiter != ROUND_ROBIN_) {
+                // age-based: keep the oldest candidate. The age is either
+                // local (head-flit enqueue time at this router's input
+                // unit) or end-to-end (flit enqueue time at the source
+                // network interface).
+                Tick enqueue_time = (m_switch_arbiter == ROUTER_AGE_) ?
+                    input_unit->get_enqueue_time(invc) :
+                    input_unit->peekTopFlit(invc)->get_enqueue_time();
                 if (winner == -1 || enqueue_time < winner_enqueue_time) {
                     winner = invc;
                     winner_enqueue_time = enqueue_time;
@@ -167,13 +176,16 @@ SwitchAllocator::arbitrate_inports()
 /*
  * SA-II (or SA-o) loops through all output ports,
  * and selects one input VC (that placed a request during SA-I)
- * as the winner for this output port. Two arbitration policies are
+ * as the winner for this output port. Three arbitration policies are
  * supported:
  *   - Round-robin: the next requesting input port starting from the
  *     round-robin pointer wins.
- *   - Age-based: the requesting input port whose packet has been waiting
- *     at this router the longest (smallest enqueue time) wins. Ties are
- *     broken starting from the round-robin pointer.
+ *   - Router age-based: the requesting input port whose packet has been
+ *     waiting at this router the longest (smallest enqueue time) wins.
+ *     Ties are broken starting from the round-robin pointer.
+ *   - Global age-based: the requesting input port whose flit was enqueued
+ *     at the source network interface the earliest (end-to-end age) wins.
+ *     Ties are broken starting from the round-robin pointer.
  *      - For HEAD/HEAD_TAIL flits, performs simplified outvc allocation.
  *        (i.e., select a free VC from the output port).
  *      - For BODY/TAIL flits, decrement a credit in the output vc.
@@ -206,11 +218,14 @@ SwitchAllocator::arbitrate_outports()
             if (m_port_requests[inport] != outport)
                 continue;
 
-            if (m_age_based_arbiter) {
-                // age-based: keep the inport that arrived here first
+            if (m_switch_arbiter != ROUND_ROBIN_) {
+                // age-based: keep the inport with the oldest flit, either
+                // by local (router) age or by end-to-end (global) age.
                 int invc = m_vc_winners[inport];
-                Tick enqueue_time = m_router->getInputUnit(inport)
-                                        ->get_enqueue_time(invc);
+                Tick enqueue_time = (m_switch_arbiter == ROUTER_AGE_) ?
+                    m_router->getInputUnit(inport)->get_enqueue_time(invc) :
+                    m_router->getInputUnit(inport)
+                        ->peekTopFlit(invc)->get_enqueue_time();
                 if (winner == -1 || enqueue_time < winner_enqueue_time) {
                     winner = inport;
                     winner_enqueue_time = enqueue_time;

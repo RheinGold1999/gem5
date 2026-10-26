@@ -118,6 +118,24 @@ class Router : public BasicRouter, public Consumer
 
     int route_compute(RouteInfo route, int inport, PortDirection direction);
     void grant_switch(int inport, flit *t_flit);
+    // Record the residence latency (in cycles) of one flit inside this
+    // router: from the cycle its flit was consumed off an input link
+    // (enter, InputUnit::wakeup) to the cycle it traversed the crossbar
+    // (leave, CrossbarSwitch::wakeup). +1 so a flit that enters and leaves
+    // within the same wakeup (1-cycle router) counts as the 1 cycle it
+    // actually occupies the router.
+    // Samples are kept so that median / 75th percentile can be computed in
+    // collateStats(). Stored as uint16 (clamped at 65535 cycles): a flit
+    // residing >64k cycles in ONE router is pathological anyway, and 2
+    // bytes/sample keeps the memory footprint sane for long, high-injection
+    // runs (e.g. 8M hop events -> ~16 MB across all routers).
+    void add_flit_router_latency(uint64_t cycles)
+    {
+        m_flit_lat_count++;
+        if (cycles > m_flit_lat_max) m_flit_lat_max = cycles;
+        m_flit_lat_samples.push_back(
+            cycles > 65535 ? 65535 : (uint16_t)cycles);
+    }
     void schedule_wakeup(Cycles time);
 
     std::string getPortDirectionName(PortDirection direction);
@@ -163,6 +181,17 @@ class Router : public BasicRouter, public Consumer
     statistics::Scalar m_sw_output_arbiter_activity;
 
     statistics::Scalar m_crossbar_activity;
+
+    // Per-flit router residence latency (enter -> leave), exposed as
+    // routers<i>.flit_router_latency_{count,max,median,p75} in
+    // stats.txt. Median and p75 are computed from the sorted samples in
+    // collateStats() (linear interpolation between adjacent order stats).
+    uint64_t m_flit_lat_count, m_flit_lat_max;
+    std::vector<uint16_t> m_flit_lat_samples;
+    statistics::Scalar m_flit_router_latency_count;
+    statistics::Scalar m_flit_router_latency_max;
+    statistics::Scalar m_flit_router_latency_median;
+    statistics::Scalar m_flit_router_latency_p75;
 };
 
 } // namespace garnet

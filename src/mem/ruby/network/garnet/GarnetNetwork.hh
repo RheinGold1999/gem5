@@ -81,7 +81,7 @@ class GarnetNetwork : public Network
     uint32_t getBuffersPerCtrlVC() { return m_buffers_per_ctrl_vc; }
     int getRoutingAlgorithm() const { return m_routing_algorithm; }
 
-    bool getAgeBasedArbiter() const { return m_age_based_arbiter; }
+    SwitchArbiterPolicy getSwitchArbiter() const { return m_switch_arbiter; }
 
     bool isFaultModelEnabled() const { return m_enable_fault_model; }
     FaultModel* fault_model;
@@ -150,6 +150,20 @@ class GarnetNetwork : public Network
         m_flit_queueing_latency[vnet] += latency;
     }
 
+    // Record the whole lifetime (in ticks) of one flit delivered to its
+    // destination controller: source-NI message enqueue -> dest-NI dequeue
+    // + drain of the dest-NI out queue (= src queueing + network + dest
+    // queueing). Samples are kept (uint32, clamped at 2^32-1 ticks) so the
+    // median / p75 / max can be computed in collateStats(); 4 B/sample
+    // bounds the memory footprint.
+    void
+    increment_flit_lifetime(Tick latency, int vnet)
+    {
+        m_flit_lifetime[vnet] += latency;
+        m_flit_lifetime_samples.push_back(
+            latency > 0xFFFFFFFFULL ? 0xFFFFFFFFULL : (uint32_t)latency);
+    }
+
     void
     increment_total_hops(int hops)
     {
@@ -169,7 +183,7 @@ class GarnetNetwork : public Network
     uint32_t m_buffers_per_data_vc;
     int m_routing_algorithm;
     bool m_enable_fault_model;
-    bool m_age_based_arbiter;
+    SwitchArbiterPolicy m_switch_arbiter;
 
     // Statistical variables
     statistics::Vector m_packets_received;
@@ -187,6 +201,14 @@ class GarnetNetwork : public Network
     statistics::Vector m_flits_injected;
     statistics::Vector m_flit_network_latency;
     statistics::Vector m_flit_queueing_latency;
+
+    // Whole-lifetime distribution of delivered flits (per-vnet sum in
+    // ticks + sample set for the quantile stats below).
+    statistics::Vector m_flit_lifetime;
+    std::vector<uint32_t> m_flit_lifetime_samples;
+    statistics::Scalar m_flit_lifetime_median;
+    statistics::Scalar m_flit_lifetime_p75;
+    statistics::Scalar m_flit_lifetime_max;
 
     statistics::Formula m_avg_flit_vnet_latency;
     statistics::Formula m_avg_flit_vqueue_latency;

@@ -32,6 +32,9 @@
 
 #include "mem/ruby/network/garnet/Router.hh"
 
+#include <algorithm>
+#include <cmath>
+
 #include "debug/RubyNetwork.hh"
 #include "mem/ruby/network/garnet/CreditLink.hh"
 #include "mem/ruby/network/garnet/GarnetNetwork.hh"
@@ -48,6 +51,22 @@ namespace ruby
 namespace garnet
 {
 
+// Empirical quantile of a SORTED sample, linear interpolation between
+// adjacent order statistics (numpy's default): q*(n-1) -> floor/ceil mix.
+static double
+quantile(const std::vector<uint16_t>& sorted, double q)
+{
+    const size_t n = sorted.size();
+    assert(n > 0);
+    double idx = q * (n - 1);
+    size_t lo = (size_t)std::floor(idx);
+    size_t hi = (size_t)std::ceil(idx);
+    if (lo == hi)
+        return sorted[lo];
+    double frac = idx - lo;
+    return sorted[lo] + frac * (sorted[hi] - sorted[lo]);
+}
+
 Router::Router(const Params &p)
   : BasicRouter(p), Consumer(this), m_latency(p.latency),
     m_virtual_networks(p.virt_nets), m_vc_per_vnet(p.vcs_per_vnet),
@@ -57,6 +76,9 @@ Router::Router(const Params &p)
 {
     m_input_unit.clear();
     m_output_unit.clear();
+    m_flit_lat_count = 0;
+    m_flit_lat_max = 0;
+    m_flit_lat_samples.clear();
 }
 
 void
@@ -216,6 +238,22 @@ Router::regStats()
         .name(name() + ".sw_output_arbiter_activity")
         .flags(statistics::nozero)
     ;
+
+    m_flit_router_latency_count
+        .name(name() + ".flit_router_latency_count")
+    ;
+
+    m_flit_router_latency_max
+        .name(name() + ".flit_router_latency_max")
+    ;
+
+    m_flit_router_latency_median
+        .name(name() + ".flit_router_latency_median")
+    ;
+
+    m_flit_router_latency_p75
+        .name(name() + ".flit_router_latency_p75")
+    ;
 }
 
 void
@@ -232,6 +270,20 @@ Router::collateStats()
     m_sw_output_arbiter_activity =
         switchAllocator.get_output_arbiter_activity();
     m_crossbar_activity = crossbarSwitch.get_crossbar_activity();
+
+    m_flit_router_latency_count = m_flit_lat_count;
+    m_flit_router_latency_max =
+        m_flit_lat_count ? m_flit_lat_max : 0;
+    // Median / p75: sort the samples once and linearly interpolate between
+    // adjacent order statistics (standard empirical quantile, type "linear",
+    // same as numpy's default). Sample of the collected residence latencies,
+    // in units of 1 network cycle.
+    std::vector<uint16_t>& s = m_flit_lat_samples;
+    std::sort(s.begin(), s.end());
+    m_flit_router_latency_median =
+        m_flit_lat_count ? quantile(s, 0.5) : 0;
+    m_flit_router_latency_p75 =
+        m_flit_lat_count ? quantile(s, 0.75) : 0;
 }
 
 void
@@ -243,6 +295,10 @@ Router::resetStats()
 
     crossbarSwitch.resetStats();
     switchAllocator.resetStats();
+
+    m_flit_lat_count = 0;
+    m_flit_lat_max = 0;
+    m_flit_lat_samples.clear();
 }
 
 void

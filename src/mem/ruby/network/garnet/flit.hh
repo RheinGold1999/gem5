@@ -59,6 +59,7 @@ class flit
     int get_outport() {return m_outport; }
     int get_size() { return m_size; }
     Tick get_enqueue_time() { return m_enqueue_time; }
+    uint64_t get_enter_cycle() { return m_enter_cycle; }
     Tick get_dequeue_time() { return m_dequeue_time; }
     int getPacketID() { return m_packet_id; }
     int get_id() { return m_id; }
@@ -78,6 +79,9 @@ class flit
     void set_src_delay(Tick delay) { src_delay = delay; }
     void set_dequeue_time(Tick time) { m_dequeue_time = time; }
     void set_enqueue_time(Tick time) { m_enqueue_time = time; }
+    // Router residence measurement: cycle in which this flit was consumed
+    // from an input link of the current router (set by InputUnit::wakeup).
+    void set_enter_cycle(uint64_t cycle) { m_enter_cycle = cycle; }
 
     void increment_hops() { m_route.hops_traversed++; }
     virtual void print(std::ostream& out) const;
@@ -124,6 +128,7 @@ class flit
     int m_size;
     Tick m_enqueue_time, m_dequeue_time;
     Tick m_time;
+    uint64_t m_enter_cycle;   // cycle the flit entered its current router
     flit_type m_type;
     MsgPtr m_msg_ptr;
     int m_outport;

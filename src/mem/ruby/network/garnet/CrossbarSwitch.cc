@@ -87,6 +87,13 @@ CrossbarSwitch::wakeup()
             m_router->getOutputUnit(outport)->insert_flit(t_flit);
             switch_buffer.getTopFlit();
             m_crossbar_activity++;
+
+            // Flit leaves this router: record its residence latency
+            // (enter -> leave), in cycles. +1 so a 1-cycle pass-through
+            // (enter and cross the crossbar in the same wakeup) counts as
+            // the 1 cycle the flit occupies the router.
+            m_router->add_flit_router_latency(
+                (uint64_t)m_router->curCycle() - t_flit->get_enter_cycle() + 1);
         }
     }
 }

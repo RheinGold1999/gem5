@@ -36,6 +36,10 @@ from m5.params import *
 from m5.proxy import *
 
 
+class SwitchArbiterPolicy(Enum):
+    vals = ["round_robin", "router_age_based", "global_age_based"]
+
+
 class GarnetNetwork(RubyNetwork):
     type = "GarnetNetwork"
     cxx_header = "mem/ruby/network/garnet/GarnetNetwork.hh"
@@ -47,9 +51,11 @@ class GarnetNetwork(RubyNetwork):
     buffers_per_data_vc = Param.UInt32(4, "buffers per data virtual channel")
     buffers_per_ctrl_vc = Param.UInt32(1, "buffers per ctrl virtual channel")
     routing_algorithm = Param.Int(0, "0: Weight-based Table, 1: XY, 2: Custom")
-    age_based_arbiter = Param.Bool(
-        False, "use age-based (oldest-first) switch arbitration instead of "
-        "round-robin"
+    switch_arbiter = Param.SwitchArbiterPolicy(
+        'round_robin',
+        "switch (SA) arbitration policy: 'round_robin', 'router_age_based' "
+        "(oldest-first by enqueue time at this router), 'global_age_based' "
+        "(oldest-first by enqueue time at the source network interface)"
     )
     enable_fault_model = Param.Bool(False, "enable network fault model")
     fault_model = Param.FaultModel(NULL, "network fault model")
