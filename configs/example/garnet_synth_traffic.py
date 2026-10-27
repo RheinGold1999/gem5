@@ -306,8 +306,6 @@ system.clk_domain = SrcClockDomain(
     clock=args.sys_clock, voltage_domain=system.voltage_domain
 )
 
-breakpoint()
-
 Ruby.create_system(args, False, system)
 
 # Create a seperate clock domain for Ruby
@@ -340,11 +338,9 @@ root.system.mem_mode = "timing"
 m5.ticks.setGlobalFrequency("1ps")
 
 # instantiate configuration
-breakpoint()
 m5.instantiate()
 
 # simulate until program terminates
-breakpoint()
 exit_event = m5.simulate(args.abs_max_tick)
 
 print("Exiting @ tick", m5.curTick(), "because", exit_event.getCause())

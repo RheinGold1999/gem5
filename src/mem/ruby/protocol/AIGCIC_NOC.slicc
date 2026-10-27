@@ -1,0 +1,5 @@
+protocol "AIGCIC_NOC";
+include "AIGCIC_NOC-msg.sm";
+include "AIGCIC_NOC-cache.sm";
+include "AIGCIC_NOC-dir.sm";
+include "AIGCIC_NOC-dma.sm";

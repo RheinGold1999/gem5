@@ -43,6 +43,9 @@ config RUBY_PROTOCOL_MESI_Three_Level_HTM
 config RUBY_PROTOCOL_MI_example
     bool "MI example"
     default n
+config RUBY_PROTOCOL_AIGCIC_NOC
+    bool "AIGCIC NoC protocol"
+    default n
 config RUBY_PROTOCOL_MOESI_CMP_directory
     bool "MOESI CMP directory"
     default n
