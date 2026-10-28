@@ -38,17 +38,21 @@ L1 (Sequencer + CacheMemory)  ---NoC (Garnet)---  DRAM Controller (agent) --- DR
   forwarding, no DMA**. The protocol only exists to put realistic
   request/response traffic on the NoC.
 
-### 1.2 Virtual networks (4 vnets, 1 VC each)
+### 1.2 Virtual networks (4 vnets)
 
 | vnet | purpose | messages |
 |---|---|---|
 | vnet0 | request, internal-die | GETX (1 flit), PUTX (data) |
-| vnet1 | request, cross-die | reserved (no buffers attached yet) |
+| vnet1 | request, cross-die | path in place (buffers wired, idle until the address map routes cross-die traffic) |
 | vnet2 | response, internal-die | DATA (data), WB_ACK (1 flit) |
-| vnet3 | response, cross-die | reserved (no buffers attached yet) |
+| vnet3 | response, cross-die | path in place (buffers wired, idle) |
 
-Mesh traffic currently always uses vnet0/vnet2 (internal die). Cross-die
-vnets are placeholders for future die-to-die traffic.
+Mesh traffic currently always uses vnet0/vnet2 (internal die). The
+cross-die path (vnet1/vnet3) is fully wired on both sides — L1 has
+`requestFromCacheXD`/`responseToCacheXD`, the DRAM-controller agent has
+`requestToDirXD`/`responseFromDirXD` and a per-TBE `CrossDie` flag that
+steers the response vnet — it only needs the address-map decision to be
+activated.
 
 ### 1.3 Flit sizing
 
@@ -115,6 +119,15 @@ a **logical 4x6 mesh on a 4x8 fabric**:
 | `--vcs-per-vnet` | 1 | one VC per vnet |
 | `--inj-vnet` | 0 | inject on vnet0 (request internal-die); only vnet0 has receiving agents |
 | `--xor-low-bit` | 22 | XOR-hash low bit (required for 32 dirs + default `--lines-per-dest=1024`) |
+| `--mem-type` | `SimpleMemory` | **ideal DRAM**: fixed 1-cycle latency, unlimited bandwidth (`configs/ruby/Ruby.py` sets this for `AIGCIC_NOC` builds), so the NoC is the only bottleneck. Override with e.g. `--mem-type=DDR4_1600_8x8` for a real memory system |
+
+Ruby-sequencer side (set in `configs/ruby/AIGCIC_NOC.py`, not CLI):
+
+| Parameter | Value | Meaning |
+|---|---|---|
+| `max_outstanding_requests` | 256 | per-L1 sequencer outstanding cap (gem5 default 16). NOTE: this is **not** the throughput bottleneck — with ≥2 VCs the wall is memory bandwidth; larger values only deepen the NI queues (higher latency, same throughput) |
+| `number_of_TBEs` (L1) | 512 | one TBE per in-flight miss; must be ≥ `max_outstanding_requests` |
+| `number_of_TBEs` (dir) | 16384 | the DRAM-controller agent aggregates requests from all L1s |
 
 ### 3.2 Bare invocation (defaults apply)
 
@@ -190,6 +203,7 @@ Extra instrumentation added on top of stock gem5:
 |---|---|
 | `routers<i>.flit_router_latency_{count,max,median,p75}` | flit residence inside router *i*: from being consumed off an input link (incl. Local injection) to crossing the crossbar (incl. ejection), counted as leave − enter + 1; a 1-cycle pass-through = 1 |
 | `network.flit_lifetime` / `flit_lifetime_{median,p75,max}` | whole flit lifetime: source-NI message enqueue → dest-NI dequeue + dest-NI out-queue drain (per-vnet sum + p50/p75/max over delivered-flit samples) |
+| `network.flit_network_latency_{median,p75,max}` | NETWORK part only (links + router pipelines, incl. the source-NI VC credit wait), same per-flit sample set — lets pure-NoC latency be separated from NI queueing |
 
 If you add a *new* build config, re-apply from
 `src/mem/ruby/network/garnet/` (Router, CrossbarSwitch, InputUnit, flit,
@@ -252,8 +266,64 @@ mode.
    and MAX of the enter→leave latency of every flit through each router
    (network cycles). Hot spots show up as high p75/max with median ≈ 1.
 7. **10 busiest internal links**.
-8. **Flit whole-lifetime latency** — network-wide averages split into
-   network part and queueing part, per-vnet breakdown, plus the
-   lifetime MEDIAN / P75 / MAX distribution (all in network cycles).
+8. **Flit latency** — grouped into three blocks (all in network cycles,
+   over delivered flits):
+   * **whole lifetime** (`= network + queueing`): MEAN / MEDIAN / P75 /
+     MAX;
+   * **network part only** (links + router pipelines): MEAN / MEDIAN /
+     P75 / MAX — the pure-NoC latency, excludes NI queueing;
+   * **queueing part** (src-NI injection queue + dest-NI out queue): MEAN.
+   Plus the per-vnet lifetime breakdown (idle vnets print `-`).
 
 Interpretation hints are printed inline with each section.
+
+---
+
+## 6. Reference results: VC sweep on the default configuration
+
+All runs: default config (ideal DRAM, 4x6 active mesh on the 4x8
+fabric, 1024-bit links, 1-flit packets, `max_outstanding_requests=256`),
+`--synthetic=uniform_random --injectionrate=0.99 --sim-cycles=200000000`
+(= 200 000 cycles). Data in `log/aigcic_noc/mesh_4x6/vc{1..4}_ideal/`.
+
+### 6.1 Throughput
+
+| | VC=1 | VC=2 | VC=3 | VC=4 |
+|---|---|---|---|---|
+| delivered packets | 925 293 | 1 983 493 | 2 417 265 | 2 501 137 |
+| effective injection (pkts/cyc/node) | 0.193 | 0.413 | 0.504 | **0.521** |
+| Local-inject duty | 19.3% | 41.3% | 50.4% | 52.1% |
+| busiest E-link | 29.2% | 62.2% | 76.1% | **79.1%** |
+
+### 6.2 Latency (network cycles)
+
+| | VC=1 | VC=2 | VC=3 | VC=4 |
+|---|---|---|---|---|
+| lifetime MEAN | 756 | 336 | 255 | 240 |
+| lifetime MEDIAN | 544 | 240 | 165 | 145 |
+| **network MEAN** | 19.3 | **17.2** | 19.9 | 24.8 |
+| **network MEDIAN** | 15 | **14** | 15 | 18 |
+| network P75 | 24 | 21 | 26 | 33 |
+| queueing MEAN (NI buffers) | 737 | 319 | 235 | 215 |
+
+### 6.3 Conclusions
+
+1. **Pure-NoC latency is almost VC-independent**: the network-part
+   MEDIAN stays at 14–18 cycles from 29% up to 79% peak link load; only
+   a mild congestion tail appears at VC=4 (P75 33 cycles).
+2. **All system-level latency differences live in the NI queues**: the
+   whole-lifetime MEAN (756 → 240) tracks the queueing part (737 → 215),
+   not the network part. At offered 0.99 ≫ capacity (~0.52/node), excess
+   requests pile up in the source-NI injection queue — that is memory/
+   flow-control backpressure, not NoC congestion.
+3. **Throughput saturates around VC=3–4 at ~0.52 pkts/cyc/node** with
+   the busiest link at 79%: VC=3→4 buys only +3.4% throughput and starts
+   trading NoC latency (network MEAN 19.9 → 24.8, P75 26 → 33) for it.
+4. **With a real DRAM** (`--mem-type=DDR4_1600_8x8`), the wall moves to
+   the DRAM data bus (~81% read+write with the 1-read + 1-writeback mix)
+   and VC=2 onward shows the same ~0.34 pkts/cyc/node regardless of VCs
+   or outstanding count (`vc{1..4}` / `vc*_o{16,256,512}` datasets).
+5. Practical pick for this workload: **VC=2** for latency studies,
+   **VC=4** when maximum throughput matters; measure pure-NoC latency
+   with the network-part stats (or lower `--injectionrate` below ~0.3 so
+   the NI queues stay empty).
