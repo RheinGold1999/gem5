@@ -180,6 +180,14 @@ def setup_memory_controllers(system, ruby, dir_cntrls, options):
                 mem_ctrl = m5.objects.MemCtrl(dram=dram_intf)
             else:
                 mem_ctrl = dram_intf
+                # AIGCIC_NOC: ideal memory - fixed 1-cycle latency,
+                # unlimited bandwidth (bandwidth=0 -> never busy in
+                # simple_mem.cc), so the NoC is the only bottleneck.
+                if buildEnv["PROTOCOL"] == "AIGCIC_NOC" and isinstance(
+                    mem_ctrl, SimpleMemory
+                ):
+                    mem_ctrl.latency = "1ns"
+                    mem_ctrl.bandwidth = "0GiB/s"
 
             if options.access_backing_store:
                 dram_intf.kvm_map = False
@@ -334,6 +342,10 @@ def create_directories(options, bootmem, ruby_system, system):
             block_size=ruby_system.block_size_bytes
         )
         dir_cntrl.ruby_system = ruby_system
+        # one TBE per in-flight memory access; the dir aggregates requests
+        # from all L1s, so size it generously instead of the 256 default
+        # (AIGCIC_NOC runs the sequencers with 512 outstanding each)
+        dir_cntrl.number_of_TBEs = 16384
 
         exec("ruby_system.dir_cntrl%d = dir_cntrl" % i)
         dir_cntrl_nodes.append(dir_cntrl)

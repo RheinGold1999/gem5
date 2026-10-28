@@ -19,12 +19,12 @@
  * modification, are permitted provided that the following conditions are
  * met: redistributions of source code must retain the above copyright
  * notice, this list of conditions and the following disclaimer;
- * redistributions in binary form must reproduce the above copyright
- * notice, this list of conditions and the following disclaimer in the
- * documentation and/or other materials provided with the distribution;
- * neither the name of the copyright holders nor the names of its
- * contributors may be used to endorse or promote products derived from
- * this software without specific prior written permission.
+ * redistributions in source and binary forms must reproduce the above
+ * copyright notice, this list of conditions and the following disclaimer
+ * in the documentation and/or other materials provided with the
+ * distribution; neither the name of the copyright holders nor the names
+ * of its contributors may be used to endorse or promote products derived
+ * from this software without specific prior written permission.
  *
  * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
  * "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
@@ -39,63 +39,62 @@
  * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-machine(MachineType:Directory, "Directory protocol")
+// AIGCIC_NOC DRAM-controller agent (directory machine type kept for
+// MachineType/address-mapping plumbing in the Ruby core).
+//
+// Stateless request/response gateway to DRAM:
+//   GETX -> MEMORY_READ  -> DRAM -> DATA to requestor
+//   PUTX -> MEMORY_WB    -> DRAM -> WB_ACK to requestor
+//
+// No cache coherence: no sharer/owner tracking, no invalidations, no
+// dirty-data forwarding, no DMA.
+
+machine(MachineType:Directory, "AIGCIC NoC DRAM controller agent")
     : DirectoryMemory * directory;
       Cycles directory_latency := 12;
       Cycles to_memory_controller_latency := 1;
 
-      MessageBuffer * forwardFromDir, network="To", virtual_network="3",
-            vnet_type="forward";
-      MessageBuffer * responseFromDir, network="To", virtual_network="4",
-            vnet_type="response";
-      MessageBuffer * dmaResponseFromDir, network="To", virtual_network="1",
+      MessageBuffer * responseFromDir, network="To", virtual_network="2",
             vnet_type="response";
 
-      MessageBuffer * requestToDir, network="From", virtual_network="2",
+      MessageBuffer * requestToDir, network="From", virtual_network="0",
             vnet_type="request";
-      MessageBuffer * dmaRequestToDir, network="From", virtual_network="0",
+
+      // vnet1: request cross-die, vnet3: response cross-die
+      // (path in place; unused until the address map routes cross-die
+      // traffic to them)
+      MessageBuffer * requestToDirXD, network="From", virtual_network="1",
             vnet_type="request";
+
+      MessageBuffer * responseFromDirXD, network="To", virtual_network="3",
+            vnet_type="response";
 
       MessageBuffer * requestToMemory;
       MessageBuffer * responseFromMemory;
 {
   // STATES
-  state_declaration(State, desc="Directory states", default="Directory_State_I") {
-    // Base states
-    I, AccessPermission:Read_Write, desc="Invalid";
-    M, AccessPermission:Invalid, desc="Modified";
+  state_declaration(State, desc="DRAM controller states", default="Directory_State_I") {
+    I, AccessPermission:Read_Write, desc="Invalid/Idle";
 
-    M_DRD, AccessPermission:Busy, desc="Blocked on an invalidation for a DMA read";
-    M_DWR, AccessPermission:Busy, desc="Blocked on an invalidation for a DMA write";
-
-    M_DWRI, AccessPermission:Read_Write, desc="Intermediate state M_DWR-->I";
-    M_DRDI, AccessPermission:Read_Write, desc="Intermediate state M_DRD-->I";
-
-    IM, AccessPermission:Read_Write, desc="Intermediate state I-->M";
-    MI, AccessPermission:Read_Write, desc="Intermediate state M-->I";
-    ID, AccessPermission:Read_Write, desc="Intermediate state for DMA_READ when in I";
-    ID_W, AccessPermission:Read_Write, desc="Intermediate state for DMA_WRITE when in I";
-
-    // Note: busy states when we wait for memory in transitions from or to 'I'
-    // have AccessPermission:Read_Write so this controller can get the latest
-    // data from memory during a functionalRead
+    // Busy states while we wait for memory. Read_Write permission so
+    // functionalRead can get the latest data from memory.
+    IM, AccessPermission:Read_Write, desc="Waiting for DRAM read data";
+    MI, AccessPermission:Read_Write, desc="Waiting for DRAM writeback ack";
   }
 
   // Events
-  enumeration(Event, desc="Directory events") {
+  enumeration(Event, desc="DRAM controller events") {
     // processor requests
-    GETX, desc="A GETX arrives";
-    GETS, desc="A GETS arrives";
-    PUTX, desc="A PUTX arrives";
-    PUTX_NotOwner, desc="A PUTX arrives";
-
-    // DMA requests
-    DMA_READ, desc="A DMA Read memory request";
-    DMA_WRITE, desc="A DMA Write memory request";
+    GETX, desc="A GETX (read-for-data) arrives (internal-die vnet0)";
+    PUTX, desc="A PUTX (writeback) arrives (internal-die vnet0)";
+    GETX_XD, desc="A GETX arrives (cross-die vnet1)";
+    PUTX_XD, desc="A PUTX arrives (cross-die vnet1)";
 
     // Memory Controller
-    Memory_Data, desc="Fetched data from memory arrives";
-    Memory_Ack, desc="Writeback Ack from memory arrives";
+    Memory_Data, desc="Fetched data from memory arrives (internal-die)";
+    Memory_Ack, desc="Writeback Ack from memory arrives (internal-die)";
+    Memory_Data_XD, desc="Fetched data from memory arrives (cross-die)";
+    Memory_Ack_XD, desc="Writeback Ack from memory arrives (cross-die)";
   }
 
   // TYPES
@@ -103,17 +102,16 @@ machine(MachineType:Directory, "Directory protocol")
   // DirectoryEntry
   structure(Entry, desc="...", interface="AbstractCacheEntry", main="false") {
     State DirectoryState,          desc="Directory state";
-    NetDest Sharers,                   desc="Sharers for this block";
-    NetDest Owner,                     desc="Owner of this block";
   }
 
-  // TBE entries for DMA requests
-  structure(TBE, desc="TBE entries for outstanding DMA requests") {
+  // TBE entries for outstanding memory requests
+  structure(TBE, desc="TBE entries for outstanding memory requests") {
     Addr PhysicalAddress, desc="physical address";
     State TBEState,        desc="Transient State";
-    DataBlock DataBlk,     desc="Data to be written (DMA write only)";
+    DataBlock DataBlk,     desc="Data to be written (PUTX only)";
     int Len,               desc="...";
-    MachineID DmaRequestor, desc="DMA requestor";
+    MachineID Requestor, desc="Original requestor";
+    bool CrossDie, desc="request came on the cross-die request vnet; response must go on the cross-die response vnet";
   }
 
   structure(TBETable, external="yes") {
@@ -161,18 +159,7 @@ machine(MachineType:Directory, "Directory protocol")
     }
 
     if (directory.isPresent(addr)) {
-
-      if (state == State:M) {
-        assert(getDirectoryEntry(addr).Owner.count() == 1);
-        assert(getDirectoryEntry(addr).Sharers.count() == 0);
-      }
-
       getDirectoryEntry(addr).DirectoryState := state;
-
-      if (state == State:I)  {
-        assert(getDirectoryEntry(addr).Owner.count() == 0);
-        assert(getDirectoryEntry(addr).Sharers.count() == 0);
-      }
     }
   }
 
@@ -215,21 +202,19 @@ machine(MachineType:Directory, "Directory protocol")
   }
 
   // ** OUT_PORTS **
-  out_port(forwardNetwork_out, RequestMsg, forwardFromDir);
   out_port(responseNetwork_out, ResponseMsg, responseFromDir);
-  out_port(requestQueue_out, ResponseMsg, requestToDir); // For recycling requests
-  out_port(dmaResponseNetwork_out, DMAResponseMsg, dmaResponseFromDir);
+  out_port(responseXDNetwork_out, ResponseMsg, responseFromDirXD);
   out_port(memQueue_out, MemoryMsg, requestToMemory);
 
   // ** IN_PORTS **
-  in_port(dmaRequestQueue_in, DMARequestMsg, dmaRequestToDir) {
-    if (dmaRequestQueue_in.isReady(clockEdge())) {
-      peek(dmaRequestQueue_in, DMARequestMsg) {
-        TBE tbe := TBEs[in_msg.LineAddress];
-        if (in_msg.Type == DMARequestType:READ) {
-          trigger(Event:DMA_READ, in_msg.LineAddress, tbe);
-        } else if (in_msg.Type == DMARequestType:WRITE) {
-          trigger(Event:DMA_WRITE, in_msg.LineAddress, tbe);
+  in_port(requestXDQueue_in, RequestMsg, requestToDirXD) {
+    if (requestXDQueue_in.isReady(clockEdge())) {
+      peek(requestXDQueue_in, RequestMsg) {
+        TBE tbe := TBEs[in_msg.addr];
+        if (in_msg.Type == CoherenceRequestType:GETX) {
+          trigger(Event:GETX_XD, in_msg.addr, tbe);
+        } else if (in_msg.Type == CoherenceRequestType:PUTX) {
+          trigger(Event:PUTX_XD, in_msg.addr, tbe);
         } else {
           error("Invalid message");
         }
@@ -241,16 +226,10 @@ machine(MachineType:Directory, "Directory protocol")
     if (requestQueue_in.isReady(clockEdge())) {
       peek(requestQueue_in, RequestMsg) {
         TBE tbe := TBEs[in_msg.addr];
-        if (in_msg.Type == CoherenceRequestType:GETS) {
-          trigger(Event:GETS, in_msg.addr, tbe);
-        } else if (in_msg.Type == CoherenceRequestType:GETX) {
+        if (in_msg.Type == CoherenceRequestType:GETX) {
           trigger(Event:GETX, in_msg.addr, tbe);
         } else if (in_msg.Type == CoherenceRequestType:PUTX) {
-          if (getDirectoryEntry(in_msg.addr).Owner.isElement(in_msg.Requestor)) {
-            trigger(Event:PUTX, in_msg.addr, tbe);
-          } else {
-            trigger(Event:PUTX_NotOwner, in_msg.addr, tbe);
-          }
+          trigger(Event:PUTX, in_msg.addr, tbe);
         } else {
           error("Invalid message");
         }
@@ -258,16 +237,25 @@ machine(MachineType:Directory, "Directory protocol")
     }
   }
 
-//added by SS
   // off-chip memory request/response is done
   in_port(memQueue_in, MemoryMsg, responseFromMemory) {
     if (memQueue_in.isReady(clockEdge())) {
       peek(memQueue_in, MemoryMsg) {
         TBE tbe := TBEs[in_msg.addr];
         if (in_msg.Type == MemoryRequestType:MEMORY_READ) {
-          trigger(Event:Memory_Data, in_msg.addr, tbe);
+          // The cross-die decision (address map) will be made on the
+          // request side; the TBE remembers it for the response vnet.
+          if (tbe.CrossDie) {
+            trigger(Event:Memory_Data_XD, in_msg.addr, tbe);
+          } else {
+            trigger(Event:Memory_Data, in_msg.addr, tbe);
+          }
         } else if (in_msg.Type == MemoryRequestType:MEMORY_WB) {
-          trigger(Event:Memory_Ack, in_msg.addr, tbe);
+          if (tbe.CrossDie) {
+            trigger(Event:Memory_Ack_XD, in_msg.addr, tbe);
+          } else {
+            trigger(Event:Memory_Ack, in_msg.addr, tbe);
+          }
         } else {
           DPRINTF(RubySlicc,"%s\n", in_msg.Type);
           error("Invalid message");
@@ -278,47 +266,7 @@ machine(MachineType:Directory, "Directory protocol")
 
   // Actions
 
-  action(a_sendWriteBackAck, "a", desc="Send writeback ack to requestor") {
-    peek(requestQueue_in, RequestMsg) {
-      enqueue(forwardNetwork_out, RequestMsg, directory_latency) {
-        out_msg.addr := address;
-        out_msg.Type := CoherenceRequestType:WB_ACK;
-        out_msg.Requestor := in_msg.Requestor;
-        out_msg.Destination.add(in_msg.Requestor);
-        out_msg.MessageSize := MessageSizeType:Writeback_Control;
-      }
-    }
-  }
-
-  action(l_sendWriteBackAck, "la", desc="Send writeback ack to requestor") {
-    peek(memQueue_in, MemoryMsg) {
-      enqueue(forwardNetwork_out, RequestMsg, 1) {
-        out_msg.addr := address;
-        out_msg.Type := CoherenceRequestType:WB_ACK;
-        out_msg.Requestor := in_msg.OriginalRequestorMachId;
-        out_msg.Destination.add(in_msg.OriginalRequestorMachId);
-        out_msg.MessageSize := MessageSizeType:Writeback_Control;
-      }
-    }
-  }
-
-  action(b_sendWriteBackNack, "b", desc="Send writeback nack to requestor") {
-    peek(requestQueue_in, RequestMsg) {
-      enqueue(forwardNetwork_out, RequestMsg, directory_latency) {
-        out_msg.addr := address;
-        out_msg.Type := CoherenceRequestType:WB_NACK;
-        out_msg.Requestor := in_msg.Requestor;
-        out_msg.Destination.add(in_msg.Requestor);
-        out_msg.MessageSize := MessageSizeType:Writeback_Control;
-      }
-    }
-  }
-
-  action(c_clearOwner, "c", desc="Clear the owner field") {
-    getDirectoryEntry(address).Owner.clear();
-  }
-
-  action(d_sendData, "d", desc="Send data to requestor") {
+  action(d_sendData, "d", desc="Send DRAM data to requestor") {
     peek(memQueue_in, MemoryMsg) {
       enqueue(responseNetwork_out, ResponseMsg, 1) {
         out_msg.addr := address;
@@ -331,80 +279,38 @@ machine(MachineType:Directory, "Directory protocol")
     }
   }
 
-  action(dr_sendDMAData, "dr", desc="Send Data to DMA controller from directory") {
+  action(d_sendDataXD, "dx", desc="Send DRAM data to requestor (cross-die vnet3)") {
     peek(memQueue_in, MemoryMsg) {
-      enqueue(dmaResponseNetwork_out, DMAResponseMsg, 1) {
-        assert(is_valid(tbe));
-        out_msg.PhysicalAddress := address;
-        out_msg.LineAddress := address;
-        out_msg.Type := DMAResponseType:DATA;
-        out_msg.DataBlk := in_msg.DataBlk;   // we send the entire data block and rely on the dma controller to split it up if need be
-        out_msg.Destination.add(tbe.DmaRequestor);
-        out_msg.MessageSize := MessageSizeType:Response_Data;
-      }
-    }
-  }
-
-
-
-  action(drp_sendDMAData, "drp", desc="Send Data to DMA controller from incoming PUTX") {
-    peek(requestQueue_in, RequestMsg) {
-      enqueue(dmaResponseNetwork_out, DMAResponseMsg, 1) {
-        assert(is_valid(tbe));
-        out_msg.PhysicalAddress := address;
-        out_msg.LineAddress := address;
-        out_msg.Type := DMAResponseType:DATA;
-
-        // we send the entire data block and rely on the dma controller
-        // to split it up if need be
+      enqueue(responseXDNetwork_out, ResponseMsg, 1) {
+        out_msg.addr := address;
+        out_msg.Type := CoherenceResponseType:DATA;
+        out_msg.Sender := machineID;
+        out_msg.Destination.add(in_msg.OriginalRequestorMachId);
         out_msg.DataBlk := in_msg.DataBlk;
-        out_msg.Destination.add(tbe.DmaRequestor);
         out_msg.MessageSize := MessageSizeType:Response_Data;
       }
     }
   }
 
-  action(da_sendDMAAck, "da", desc="Send Ack to DMA controller") {
-      enqueue(dmaResponseNetwork_out, DMAResponseMsg, 1) {
-        assert(is_valid(tbe));
-        out_msg.PhysicalAddress := address;
-        out_msg.LineAddress := address;
-        out_msg.Type := DMAResponseType:ACK;
-        out_msg.Destination.add(tbe.DmaRequestor);
-        out_msg.MessageSize := MessageSizeType:Writeback_Control;
-      }
-  }
-
-  action(e_ownerIsRequestor, "e", desc="The owner is now the requestor") {
-    peek(requestQueue_in, RequestMsg) {
-      getDirectoryEntry(address).Owner.clear();
-      getDirectoryEntry(address).Owner.add(in_msg.Requestor);
-    }
-  }
-
-  action(f_forwardRequest, "f", desc="Forward request to owner") {
-    peek(requestQueue_in, RequestMsg) {
-      APPEND_TRANSITION_COMMENT("Own: ");
-      APPEND_TRANSITION_COMMENT(getDirectoryEntry(in_msg.addr).Owner);
-      APPEND_TRANSITION_COMMENT("Req: ");
-      APPEND_TRANSITION_COMMENT(in_msg.Requestor);
-      enqueue(forwardNetwork_out, RequestMsg, directory_latency) {
+  action(la_sendWriteBackAck, "la", desc="Send writeback ack to requestor") {
+    peek(memQueue_in, MemoryMsg) {
+      enqueue(responseNetwork_out, ResponseMsg, 1) {
         out_msg.addr := address;
-        out_msg.Type := in_msg.Type;
-        out_msg.Requestor := in_msg.Requestor;
-        out_msg.Destination := getDirectoryEntry(in_msg.addr).Owner;
+        out_msg.Type := CoherenceResponseType:WB_ACK;
+        out_msg.Sender := machineID;
+        out_msg.Destination.add(in_msg.OriginalRequestorMachId);
         out_msg.MessageSize := MessageSizeType:Writeback_Control;
       }
     }
   }
 
-  action(inv_sendCacheInvalidate, "inv", desc="Invalidate a cache block") {
-    peek(dmaRequestQueue_in, DMARequestMsg) {
-      enqueue(forwardNetwork_out, RequestMsg, directory_latency) {
+  action(la_sendWriteBackAckXD, "lax", desc="Send writeback ack (cross-die vnet3)") {
+    peek(memQueue_in, MemoryMsg) {
+      enqueue(responseXDNetwork_out, ResponseMsg, 1) {
         out_msg.addr := address;
-        out_msg.Type := CoherenceRequestType:INV;
-        out_msg.Requestor := machineID;
-        out_msg.Destination := getDirectoryEntry(in_msg.PhysicalAddress).Owner;
+        out_msg.Type := CoherenceResponseType:WB_ACK;
+        out_msg.Sender := machineID;
+        out_msg.Destination.add(in_msg.OriginalRequestorMachId);
         out_msg.MessageSize := MessageSizeType:Writeback_Control;
       }
     }
@@ -414,27 +320,8 @@ machine(MachineType:Directory, "Directory protocol")
     requestQueue_in.dequeue(clockEdge());
   }
 
-  action(p_popIncomingDMARequestQueue, "p", desc="Pop incoming DMA queue") {
-    dmaRequestQueue_in.dequeue(clockEdge());
-  }
-
-  action(v_allocateTBE, "v", desc="Allocate TBE") {
-    peek(dmaRequestQueue_in, DMARequestMsg) {
-      TBEs.allocate(address);
-      set_tbe(TBEs[address]);
-      tbe.DataBlk := in_msg.DataBlk;
-      tbe.PhysicalAddress := in_msg.PhysicalAddress;
-      tbe.Len := in_msg.Len;
-      tbe.DmaRequestor := in_msg.Requestor;
-    }
-  }
-
-  action(r_allocateTbeForDmaRead, "\r", desc="Allocate TBE for DMA Read") {
-    peek(dmaRequestQueue_in, DMARequestMsg) {
-      TBEs.allocate(address);
-      set_tbe(TBEs[address]);
-      tbe.DmaRequestor := in_msg.Requestor;
-    }
+  action(ix_popIncomingRequestXDQueue, "ix", desc="Pop incoming cross-die request queue") {
+    requestXDQueue_in.dequeue(clockEdge());
   }
 
   action(v_allocateTBEFromRequestNet, "\v", desc="Allocate TBE") {
@@ -442,6 +329,18 @@ machine(MachineType:Directory, "Directory protocol")
       TBEs.allocate(address);
       set_tbe(TBEs[address]);
       tbe.DataBlk := in_msg.DataBlk;
+      tbe.Requestor := in_msg.Requestor;
+      tbe.CrossDie := false;
+    }
+  }
+
+  action(vx_allocateTBEFromRequestXDNet, "vx", desc="Allocate TBE (cross-die request)") {
+    peek(requestXDQueue_in, RequestMsg) {
+      TBEs.allocate(address);
+      set_tbe(TBEs[address]);
+      tbe.DataBlk := in_msg.DataBlk;
+      tbe.Requestor := in_msg.Requestor;
+      tbe.CrossDie := true;
     }
   }
 
@@ -454,10 +353,9 @@ machine(MachineType:Directory, "Directory protocol")
     requestQueue_in.recycle(clockEdge(), cyclesToTicks(recycle_latency));
   }
 
-  action(y_recycleDMARequestQueue, "y", desc="recycle dma request queue") {
-    dmaRequestQueue_in.recycle(clockEdge(), cyclesToTicks(recycle_latency));
+  action(zx_recycleRequestXDQueue, "zx", desc="recycle cross-die request queue") {
+    requestXDQueue_in.recycle(clockEdge(), cyclesToTicks(recycle_latency));
   }
-
 
   action(qf_queueMemoryFetchRequest, "qf", desc="Queue off-chip fetch request") {
     peek(requestQueue_in, RequestMsg) {
@@ -471,40 +369,14 @@ machine(MachineType:Directory, "Directory protocol")
     }
   }
 
-  action(qf_queueMemoryFetchRequestDMA, "qfd", desc="Queue off-chip fetch request") {
-    peek(dmaRequestQueue_in, DMARequestMsg) {
+  action(qfx_queueMemoryFetchRequestXD, "qfx", desc="Queue off-chip fetch request (cross-die)") {
+    peek(requestXDQueue_in, RequestMsg) {
       enqueue(memQueue_out, MemoryMsg, to_memory_controller_latency) {
         out_msg.addr := address;
         out_msg.Type := MemoryRequestType:MEMORY_READ;
         out_msg.Sender := in_msg.Requestor;
         out_msg.MessageSize := MessageSizeType:Request_Control;
         out_msg.Len := 0;
-      }
-    }
-  }
-
-  action(qw_queueMemoryWBRequest_partial, "qwp", desc="Queue off-chip writeback request") {
-    peek(dmaRequestQueue_in, DMARequestMsg) {
-      enqueue(memQueue_out, MemoryMsg, to_memory_controller_latency) {
-        out_msg.addr := address;
-        out_msg.Type := MemoryRequestType:MEMORY_WB;
-        out_msg.Sender := in_msg.Requestor;
-        out_msg.MessageSize := MessageSizeType:Writeback_Data;
-        out_msg.DataBlk := in_msg.DataBlk;
-        out_msg.Len := in_msg.Len;
-      }
-    }
-  }
-
-  action(qw_queueMemoryWBRequest_partialTBE, "qwt", desc="Queue off-chip writeback request") {
-    peek(requestQueue_in, RequestMsg) {
-      enqueue(memQueue_out, MemoryMsg, to_memory_controller_latency) {
-        out_msg.addr := address;
-        out_msg.Type := MemoryRequestType:MEMORY_WB;
-        out_msg.Sender := in_msg.Requestor;
-        out_msg.MessageSize := MessageSizeType:Writeback_Data;
-        out_msg.DataBlk := tbe.DataBlk;
-        out_msg.Len := tbe.Len;
       }
     }
   }
@@ -522,138 +394,82 @@ machine(MachineType:Directory, "Directory protocol")
     }
   }
 
+  action(lx_queueMemoryWBRequestXD, "lxq", desc="Write PUTX data to memory (cross-die)") {
+    peek(requestXDQueue_in, RequestMsg) {
+      enqueue(memQueue_out, MemoryMsg, to_memory_controller_latency) {
+        out_msg.addr := address;
+        out_msg.Type := MemoryRequestType:MEMORY_WB;
+        out_msg.Sender := in_msg.Requestor;
+        out_msg.MessageSize := MessageSizeType:Writeback_Data;
+        out_msg.DataBlk := in_msg.DataBlk;
+        out_msg.Len := 0;
+      }
+    }
+  }
+
   action(l_popMemQueue, "q", desc="Pop off-chip request queue") {
     dequeueMemRespQueue();
   }
 
   // TRANSITIONS
-  transition({M_DRD, M_DWR, M_DWRI, M_DRDI}, GETX) {
+
+  transition({IM, MI}, {GETX, PUTX}) {
     z_recycleRequestQueue;
   }
 
-  transition({IM, MI, ID, ID_W}, {GETX, GETS, PUTX, PUTX_NotOwner} ) {
-    z_recycleRequestQueue;
+  transition({IM, MI}, {GETX_XD, PUTX_XD}) {
+    zx_recycleRequestXDQueue;
   }
 
-  transition({IM, MI, ID, ID_W, M_DRDI}, {DMA_READ, DMA_WRITE} ) {
-    y_recycleDMARequestQueue;
-  }
-
-
+  // Read path: GETX -> DRAM read -> DATA
   transition(I, GETX, IM) {
-    //d_sendData;
     v_allocateTBEFromRequestNet;
     qf_queueMemoryFetchRequest;
-    e_ownerIsRequestor;
     i_popIncomingRequestQueue;
   }
 
-  transition(IM, Memory_Data, M) {
+  transition(IM, Memory_Data, I) {
     d_sendData;
-    //e_ownerIsRequestor;
     w_deallocateTBE;
     l_popMemQueue;
   }
 
-
-  transition(I, DMA_READ, ID) {
-    //dr_sendDMAData;
-    r_allocateTbeForDmaRead;
-    qf_queueMemoryFetchRequestDMA;
-    p_popIncomingDMARequestQueue;
+  // Read path (cross-die): GETX -> DRAM read -> DATA on vnet3
+  transition(I, GETX_XD, IM) {
+    vx_allocateTBEFromRequestXDNet;
+    qfx_queueMemoryFetchRequestXD;
+    ix_popIncomingRequestXDQueue;
   }
 
-  transition(ID, Memory_Data, I) {
-    dr_sendDMAData;
-    //p_popIncomingDMARequestQueue;
+  transition(IM, Memory_Data_XD, I) {
+    d_sendDataXD;
     w_deallocateTBE;
     l_popMemQueue;
   }
 
-
-
-  transition(I, DMA_WRITE, ID_W) {
-    v_allocateTBE;
-    qw_queueMemoryWBRequest_partial;
-    p_popIncomingDMARequestQueue;
-  }
-
-  transition(ID_W, Memory_Ack, I) {
-    da_sendDMAAck;
-    w_deallocateTBE;
-    l_popMemQueue;
-  }
-
-  transition(M, DMA_READ, M_DRD) {
-    v_allocateTBE;
-    inv_sendCacheInvalidate;
-    p_popIncomingDMARequestQueue;
-  }
-
-  transition(M_DRD, PUTX, M_DRDI) {
-    drp_sendDMAData;
-    c_clearOwner;
-    l_queueMemoryWBRequest;
-    i_popIncomingRequestQueue;
-  }
-
-  transition(M_DRDI, Memory_Ack, I) {
-    l_sendWriteBackAck;
-    w_deallocateTBE;
-    l_popMemQueue;
-  }
-
-
-  transition(M, DMA_WRITE, M_DWR) {
-    v_allocateTBE;
-    inv_sendCacheInvalidate;
-    p_popIncomingDMARequestQueue;
-  }
-
-  transition(M_DWR, PUTX, M_DWRI) {
-    qw_queueMemoryWBRequest_partialTBE;
-    c_clearOwner;
-    i_popIncomingRequestQueue;
-  }
-
-  transition(M_DWRI, Memory_Ack, I) {
-    l_sendWriteBackAck;
-    da_sendDMAAck;
-    w_deallocateTBE;
-    l_popMemQueue;
-  }
-
-  transition(M, GETX, M) {
-    f_forwardRequest;
-    e_ownerIsRequestor;
-    i_popIncomingRequestQueue;
-  }
-
-  transition(M, PUTX, MI) {
-    c_clearOwner;
+  // Write path: PUTX -> DRAM write -> WB_ACK
+  transition(I, PUTX, MI) {
     v_allocateTBEFromRequestNet;
     l_queueMemoryWBRequest;
     i_popIncomingRequestQueue;
   }
 
   transition(MI, Memory_Ack, I) {
-    l_sendWriteBackAck;
+    la_sendWriteBackAck;
     w_deallocateTBE;
     l_popMemQueue;
   }
 
-  transition(M, PUTX_NotOwner, M) {
-    b_sendWriteBackNack;
-    i_popIncomingRequestQueue;
+  // Write path (cross-die): PUTX -> DRAM write -> WB_ACK on vnet3
+  transition(I, PUTX_XD, MI) {
+    vx_allocateTBEFromRequestXDNet;
+    lx_queueMemoryWBRequestXD;
+    ix_popIncomingRequestXDQueue;
   }
 
-  transition(I, PUTX_NotOwner, I) {
-    b_sendWriteBackNack;
-    i_popIncomingRequestQueue;
-  }
-
-  transition({M_DWR, M_DRD, M_DRDI, M_DWRI}, PUTX_NotOwner) {
-    b_sendWriteBackNack;
-    i_popIncomingRequestQueue;
+  transition(MI, Memory_Ack_XD, I) {
+    la_sendWriteBackAckXD;
+    w_deallocateTBE;
+    l_popMemQueue;
   }
 }

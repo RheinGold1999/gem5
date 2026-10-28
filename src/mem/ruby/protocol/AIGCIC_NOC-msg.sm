@@ -6,12 +6,12 @@
  * modification, are permitted provided that the following conditions are
  * met: redistributions of source code must retain the above copyright
  * notice, this list of conditions and the following disclaimer;
- * redistributions in binary form must reproduce the above copyright
- * notice, this list of conditions and the following disclaimer in the
- * documentation and/or other materials provided with the distribution;
- * neither the name of the copyright holders nor the names of its
- * contributors may be used to endorse or promote products derived from
- * this software without specific prior written permission.
+ * redistributions in source and binary forms must reproduce the above
+ * copyright notice, this list of conditions and the following disclaimer
+ * in the documentation and/or other materials provided with the
+ * distribution; neither the name of the copyright holders nor the names
+ * of its contributors may be used to endorse or promote products derived
+ * from this software without specific prior written permission.
  *
  * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
  * "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
@@ -26,36 +26,34 @@
  * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
+// AIGCIC_NOC: GPU-style L1 + DRAM-controller (directory agent) protocol.
+// No cache coherence: no invalidations, no dirty-data forwarding, no DMA.
+//
+// vnet usage (4 vnets):
+//   vnet0: request  internal-die   (GETX 1-flit, PUTX data)
+//   vnet1: request  cross-die      (reserved, no buffers yet)
+//   vnet2: response internal-die   (DATA, WB_ACK)
+//   vnet3: response cross-die      (reserved, no buffers yet)
+
 // CoherenceRequestType
 enumeration(CoherenceRequestType, desc="...") {
-  GETX,      desc="Get eXclusive";
-  GETS,      desc="Get Shared";
-  PUTX,      desc="Put eXclusive";
-  WB_ACK,    desc="Writeback ack";
-  WB_NACK,   desc="Writeback neg. ack";
-  INV,       desc="Invalidation";
+  GETX,      desc="Get eXclusive (L1 miss: load or store)";
+  PUTX,      desc="Put eXclusive (L1 writeback on replacement)";
 }
 
 // CoherenceResponseType
 enumeration(CoherenceResponseType, desc="...") {
-  ACK,               desc="ACKnowledgment, responder doesn't have a copy";
   DATA,              desc="Data";
-  DATA_EXCLUSIVE_CLEAN, desc="Data, no other processor has a copy, data is clean";
-  DATA_EXCLUSIVE_DIRTY, desc="Data, no other processor has a copy, data is dirty";
-  UNBLOCK,           desc="Unblock";
-  UNBLOCK_EXCLUSIVE, desc="Unblock, we're in E/M";
-  WRITEBACK_CLEAN,   desc="Clean writeback (no data)";
-  WRITEBACK_DIRTY,   desc="Dirty writeback (contains data)";
-  WRITEBACK,         desc="Generic writeback (contains data)";
+  WB_ACK,            desc="Writeback ack (writeback completed in DRAM)";
 }
 
-// RequestMsg (and also forwarded requests)
+// RequestMsg
 structure(RequestMsg, desc="...", interface="Message") {
   Addr addr,             desc="Physical address for this request";
-  CoherenceRequestType Type,   desc="Type of request (GetS, GetX, PutX, etc)";
+  CoherenceRequestType Type,   desc="Type of request (GetX, PutX)";
   MachineID Requestor,            desc="Node who initiated the request";
   NetDest Destination,             desc="Multicast destination mask";
-  DataBlock DataBlk,           desc="data for the cache line";
+  DataBlock DataBlk,           desc="data for the cache line (PUTX only)";
   MessageSizeType MessageSize, desc="size category of the message";
 
   bool functionalRead(Packet *pkt) {
@@ -73,10 +71,10 @@ structure(RequestMsg, desc="...", interface="Message") {
   }
 }
 
-// ResponseMsg (and also unblock requests)
+// ResponseMsg
 structure(ResponseMsg, desc="...", interface="Message") {
   Addr addr,             desc="Physical address for this request";
-  CoherenceResponseType Type,  desc="Type of response (Ack, Data, etc)";
+  CoherenceResponseType Type,  desc="Type of response (Data, WB_ACK)";
   MachineID Sender,               desc="Node who sent the data";
   NetDest Destination,             desc="Node to whom the data is sent";
   DataBlock DataBlk,           desc="data for the cache line";
@@ -93,53 +91,5 @@ structure(ResponseMsg, desc="...", interface="Message") {
     // No check on message type required since the protocol should read
     // data block from only those messages that contain valid data
     return testAndWrite(addr, DataBlk, pkt);
-  }
-}
-
-enumeration(DMARequestType, desc="...", default="DMARequestType_NULL") {
-  READ,          desc="Memory Read";
-  WRITE,         desc="Memory Write";
-  NULL,          desc="Invalid";
-}
-
-enumeration(DMAResponseType, desc="...", default="DMAResponseType_NULL") {
-  DATA,          desc="DATA read";
-  ACK,           desc="ACK write";
-  NULL,          desc="Invalid";
-}
-
-structure(DMARequestMsg, desc="...", interface="Message") {
-  DMARequestType Type,       desc="Request type (read/write)";
-  Addr PhysicalAddress,   desc="Physical address for this request";
-  Addr LineAddress,       desc="Line address for this request";
-  MachineID Requestor,            desc="Node who initiated the request";
-  NetDest Destination,       desc="Destination";
-  DataBlock DataBlk,         desc="DataBlk attached to this request";
-  int Len,                   desc="The length of the request";
-  MessageSizeType MessageSize, desc="size category of the message";
-
-  bool functionalRead(Packet *pkt) {
-    return testAndRead(LineAddress, DataBlk, pkt);
-  }
-
-  bool functionalWrite(Packet *pkt) {
-    return testAndWrite(LineAddress, DataBlk, pkt);
-  }
-}
-
-structure(DMAResponseMsg, desc="...", interface="Message") {
-  DMAResponseType Type,      desc="Response type (DATA/ACK)";
-  Addr PhysicalAddress,   desc="Physical address for this request";
-  Addr LineAddress,       desc="Line address for this request";
-  NetDest Destination,       desc="Destination";
-  DataBlock DataBlk,         desc="DataBlk attached to this request";
-  MessageSizeType MessageSize, desc="size category of the message";
-
-  bool functionalRead(Packet *pkt) {
-    return testAndRead(LineAddress, DataBlk, pkt);
-  }
-
-  bool functionalWrite(Packet *pkt) {
-    return testAndWrite(LineAddress, DataBlk, pkt);
   }
 }

@@ -60,10 +60,9 @@ def create_system(
     #
     # The ruby network creation expects the list of nodes in the system to be
     # consistent with the NetDest list.  Therefore the l1 controller nodes must be
-    # listed before the directory nodes and directory nodes before dma nodes, etc.
+    # listed before the directory (DRAM controller) nodes.
     #
     l1_cntrl_nodes = []
-    dma_cntrl_nodes = []
 
     #
     # Must create the individual controllers before the network to ensure the
@@ -93,6 +92,9 @@ def create_system(
             transitions_per_cycle=options.ports,
             clk_domain=clk_domain,
             ruby_system=ruby_system,
+            # one TBE per in-flight miss; must be >= sequencer
+            # max_outstanding_requests, else the TBE table overflows
+            number_of_TBEs=512,
         )
 
         cpu_seq = RubySequencer(
@@ -100,6 +102,11 @@ def create_system(
             dcache=cache,
             clk_domain=clk_domain,
             ruby_system=ruby_system,
+            # gem5 default is 16. Note: this cap is NOT the throughput
+            # bottleneck (raising it to 512 left throughput unchanged;
+            # the wall is DRAM bus bandwidth once VCs >= 2). 256 gives
+            # headroom without the queue bloat seen at 512.
+            max_outstanding_requests=256,
         )
 
         l1_cntrl.sequencer = cpu_seq
@@ -115,10 +122,15 @@ def create_system(
         l1_cntrl.requestFromCache.out_port = ruby_system.network.in_port
         l1_cntrl.responseFromCache = MessageBuffer(ordered=True)
         l1_cntrl.responseFromCache.out_port = ruby_system.network.in_port
-        l1_cntrl.forwardToCache = MessageBuffer(ordered=True)
-        l1_cntrl.forwardToCache.in_port = ruby_system.network.out_port
         l1_cntrl.responseToCache = MessageBuffer(ordered=True)
         l1_cntrl.responseToCache.in_port = ruby_system.network.out_port
+
+        # Cross-die path (vnet1/vnet3) - in place, unused until the
+        # address map routes cross-die traffic to them
+        l1_cntrl.requestFromCacheXD = MessageBuffer(ordered=True)
+        l1_cntrl.requestFromCacheXD.out_port = ruby_system.network.in_port
+        l1_cntrl.responseToCacheXD = MessageBuffer(ordered=True)
+        l1_cntrl.responseToCacheXD.in_port = ruby_system.network.out_port
 
     phys_mem_size = sum([r.size() for r in system.mem_ranges])
     assert phys_mem_size % options.num_dirs == 0
@@ -141,64 +153,25 @@ def create_system(
         # Connect the directory controllers and the network
         dir_cntrl.requestToDir = MessageBuffer(ordered=True)
         dir_cntrl.requestToDir.in_port = ruby_system.network.out_port
-        dir_cntrl.dmaRequestToDir = MessageBuffer(ordered=True)
-        dir_cntrl.dmaRequestToDir.in_port = ruby_system.network.out_port
 
         dir_cntrl.responseFromDir = MessageBuffer()
         dir_cntrl.responseFromDir.out_port = ruby_system.network.in_port
-        dir_cntrl.dmaResponseFromDir = MessageBuffer(ordered=True)
-        dir_cntrl.dmaResponseFromDir.out_port = ruby_system.network.in_port
-        dir_cntrl.forwardFromDir = MessageBuffer()
-        dir_cntrl.forwardFromDir.out_port = ruby_system.network.in_port
+
+        # Cross-die path (vnet1/vnet3) - in place, unused until the
+        # address map routes cross-die traffic to them
+        dir_cntrl.requestToDirXD = MessageBuffer(ordered=True)
+        dir_cntrl.requestToDirXD.in_port = ruby_system.network.out_port
+        dir_cntrl.responseFromDirXD = MessageBuffer()
+        dir_cntrl.responseFromDirXD.out_port = ruby_system.network.in_port
+
         dir_cntrl.requestToMemory = MessageBuffer()
         dir_cntrl.responseFromMemory = MessageBuffer()
 
-    for i, dma_port in enumerate(dma_ports):
-        #
-        # Create the Ruby objects associated with the dma controller
-        #
-        dma_seq = DMASequencer(version=i, ruby_system=ruby_system)
+    if dma_ports:
+        panic("AIGCIC_NOC protocol does not support DMA ports")
 
-        dma_cntrl = AIGCIC_NOC_DMA_Controller(
-            version=i,
-            dma_sequencer=dma_seq,
-            transitions_per_cycle=options.ports,
-            ruby_system=ruby_system,
-        )
+    all_cntrls = l1_cntrl_nodes + dir_cntrl_nodes
 
-        exec("ruby_system.dma_cntrl%d = dma_cntrl" % i)
-        exec("ruby_system.dma_cntrl%d.dma_sequencer.in_ports = dma_port" % i)
-        dma_cntrl_nodes.append(dma_cntrl)
-
-        # Connect the directory controllers and the network
-        dma_cntrl.mandatoryQueue = MessageBuffer()
-        dma_cntrl.requestToDir = MessageBuffer()
-        dma_cntrl.requestToDir.out_port = ruby_system.network.in_port
-        dma_cntrl.responseFromDir = MessageBuffer(ordered=True)
-        dma_cntrl.responseFromDir.in_port = ruby_system.network.out_port
-
-    all_cntrls = l1_cntrl_nodes + dir_cntrl_nodes + dma_cntrl_nodes
-
-    # Create the io controller and the sequencer
-    if full_system:
-        io_seq = DMASequencer(version=len(dma_ports), ruby_system=ruby_system)
-        ruby_system._io_port = io_seq
-        io_controller = AIGCIC_NOC_DMA_Controller(
-            version=len(dma_ports),
-            dma_sequencer=io_seq,
-            ruby_system=ruby_system,
-        )
-        ruby_system.io_controller = io_controller
-
-        # Connect the dma controller to the network
-        io_controller.mandatoryQueue = MessageBuffer()
-        io_controller.requestToDir = MessageBuffer()
-        io_controller.requestToDir.out_port = ruby_system.network.in_port
-        io_controller.responseFromDir = MessageBuffer(ordered=True)
-        io_controller.responseFromDir.in_port = ruby_system.network.out_port
-
-        all_cntrls = all_cntrls + [io_controller]
-
-    ruby_system.network.number_of_virtual_networks = 5
+    ruby_system.network.number_of_virtual_networks = 4
     topology = create_topology(all_cntrls, options)
     return (cpu_sequencers, mem_dir_cntrl_nodes, topology)

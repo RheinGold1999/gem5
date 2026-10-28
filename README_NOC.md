@@ -1,71 +1,190 @@
-# NoC (Garnet) Simulation & Performance-Analysis Guide
+# AIGCIC NoC (Garnet) Simulation & Performance-Analysis Guide
 
 This repository is a gem5 tree instrumented for NoC (Network-on-Chip)
-studies with Garnet. It ships two build configurations and a Python
-analysis tool that turns `stats.txt` files into per-router bandwidth /
-latency matrices.
+studies with Garnet. It ships one build configuration, the custom
+`AIGCIC_NOC` Ruby protocol and a Python analysis tool that turns
+`stats.txt` files into per-router bandwidth / latency matrices.
 
 ```
-build/Garnet_standalone/gem5.opt   pure NoC exploration build
-build/X86_MI_example/gem5.opt      NoC + real coherence-protocol build
-perf_analysis/analyze_mesh_bw.py   stats.txt -> bandwidth/latency report
-log/                               simulation output tree (stats.txt per run)
+build/NULL_AIGCIC_NOC/gem5.opt              NoC + AIGCIC_NOC protocol build
+src/mem/ruby/protocol/AIGCIC_NOC*.sm        protocol state machines (SLICC)
+configs/example/aigcic_noc_synth_traffic.py synthetic-traffic driver
+perf_analysis/analyze_mesh_bw.py            stats.txt -> bandwidth/latency report
+log/                                        simulation output tree (stats.txt per run)
 ```
 
 ---
 
-## 1. The two build configurations
+## 1. Architecture & protocol
 
-Both builds use Ruby + Garnet (`RUBY=y`) and are driven by
-`configs/example/garnet_synth_traffic.py` (synthetic traffic testers).
-They differ in the Ruby protocol, i.e. in *what kind of traffic* flows
-through the network.
+### 1.1 Target architecture
 
-### 1.1 `Garnet_standalone` — pure network exploration
+The simulated system models a **GPU-style NoC without cache coherence**:
 
 ```
-build_opts/Garnet_standalone:   RUBY=y  PROTOCOL="Garnet_standalone"
+L1 (Sequencer + CacheMemory)  ---NoC (Garnet)---  DRAM Controller (agent) --- DRAM
 ```
 
-* **Scenario**: studying the network itself (routing, arbitration,
-  link/router bandwidth, router pipeline latency) with fully controlled
-  synthetic traffic, without any coherence-protocol noise.
-* **Traffic model**: only the L1-side testers (`GarnetSyntheticTraffic`)
-  inject; the directory controllers *drop everything they receive and
-  never answer*. Destinations are directories only. Every packet is a
-  one-way injection.
-* **Consequences for the analysis**:
-  * of the 2 Local (external) ports per router, exactly ONE per direction
-    carries traffic: ext-OUT = the L1's link (injection), ext-IN = the
-    Dir's link (delivery);
-  * router outbound capacity = `#mesh_dirs + 1` (corner 3 / edge 4 /
-    interior 5 flit/cycle), not `+2`.
-* Typical use: latency/bandwidth sweeps over injection rate, traffic
-  patterns (uniform, tornado, transpose, ...), arbitration policies.
+* **L1 controllers** (`machine(L1Cache)`): one per mesh router. Loads,
+  ifetches and stores that miss go out as GETX; dirty lines are written
+  back as PUTX on replacement. No invalidations are ever received.
+* **DRAM-controller agents** (`machine(Directory)`, kept for Ruby-core
+  MachineType/address-mapping plumbing — semantically it *is* the DRAM
+  controller): one per mesh router that owns a DRAM channel. Stateless
+  request/response gateway to DRAM:
+  * `GETX -> MEMORY_READ  -> DRAM -> DATA to requestor`
+  * `PUTX -> MEMORY_WB    -> DRAM -> WB_ACK to requestor`
+* There is **no directory coherence, no invalidations, no dirty-data
+  forwarding, no DMA**. The protocol only exists to put realistic
+  request/response traffic on the NoC.
 
-### 1.2 `X86_MI_example` — network with a real coherence protocol
+### 1.2 Virtual networks (4 vnets, 1 VC each)
+
+| vnet | purpose | messages |
+|---|---|---|
+| vnet0 | request, internal-die | GETX (1 flit), PUTX (data) |
+| vnet1 | request, cross-die | reserved (no buffers attached yet) |
+| vnet2 | response, internal-die | DATA (data), WB_ACK (1 flit) |
+| vnet3 | response, cross-die | reserved (no buffers attached yet) |
+
+Mesh traffic currently always uses vnet0/vnet2 (internal die). Cross-die
+vnets are placeholders for future die-to-die traffic.
+
+### 1.3 Flit sizing
+
+* Link width is **1024 bits** (128 B) by default → 1 flit per 128 B.
+* Control messages (GETX, WB_ACK) are 8 B → **1 flit**.
+* Data messages (DATA, PUTX) are sized by payload →
+  **1 flit** for the default 64 B payload.
+* Burst: payloads larger than one flit occupy
+  `ceil(data_length / 1024 bits)` flits. The message header is **not**
+  counted (see `Network::Network` in `src/mem/ruby/network/Network.cc`).
+
+Burst runs must raise the Ruby line size together with the payload, e.g.
+
+```bash
+--cacheline_size=1024 --data-msg-size=1024
+```
+
+(data_msg_size ≤ cacheline_size is enforced by the Ruby core).
+
+---
+
+## 2. Building
+
+```bash
+scons build/NULL_AIGCIC_NOC/gem5.opt -j <N>
+```
+
+`<N>` = number of parallel jobs (e.g. 64). A debug binary is available by
+replacing `.opt` with `.debug`.
+
+`build_opts/NULL_AIGCIC_NOC` contains:
 
 ```
-build_opts/X86_MI_example:      RUBY=y  PROTOCOL="MI_example"  (+ X86 ISA)
+RUBY=y
+PROTOCOL="AIGCIC_NOC"
+RUBY_PROTOCOL_AIGCIC_NOC=y
 ```
 
-* **Scenario**: NoC studies with *realistic* traffic: the MI_example
-  coherence protocol generates GETX/PUTX requests, DATA responses and
-  forwarded snoops, so the network carries request/response/control
-  traffic in BOTH directions, with destination sets and message sizes
-  dictated by the protocol.
-* **Traffic model**: both the L1 controllers AND the directory
-  controllers send and receive over the network.
-* **Consequences for the analysis**:
-  * BOTH Local ports per router per direction carry traffic; the
-    per-router Local view is the average over both links;
-  * router outbound capacity = `#mesh_dirs + 2`;
-  * data messages are 1 flit when run with `--data-msg-size 8`
-    (see below), so every packet is a single flit.
+The `AIGCIC_NOC` protocol files live in `src/mem/ruby/protocol/`
+(`AIGCIC_NOC.slicc`, `-msg.sm`, `-cache.sm`, `-dir.sm`) and the Python
+side in `configs/ruby/AIGCIC_NOC.py`.
 
-### 1.3 Instrumented statistics (this fork)
+---
 
-Both builds carry extra instrumentation added on top of stock gem5:
+## 3. Running a simulation
+
+All runs use `configs/example/aigcic_noc_synth_traffic.py` (a dedicated
+derivative of `garnet_synth_traffic.py`). It **refuses to run on any
+binary other than a `NULL_AIGCIC_NOC` build**.
+
+### 3.1 Defaults (AIGCIC_NOC build)
+
+The driver sets AIGCIC_NOC-specific defaults so a bare invocation gives
+a **logical 4x6 mesh on a 4x8 fabric**:
+
+| Parameter | Default | Meaning |
+|---|---|---|
+| `--network` | `garnet` | Garnet NoC |
+| `--topology` | `Mesh_XY` | XY-routed mesh |
+| `--num-cpus` / `--num-dirs` | 32 / 32 | 32 L1s + 32 DRAM controllers (fabric must stay a power of two for the address encoding) |
+| `--mesh-rows` | 4 | 4x8 physical fabric |
+| `--num-active-columns` / `--num-active-rows` | 6 / 4 | traffic masked to the top-left 4x6 sub-mesh |
+| `--link-width-bits` | 1024 | 128 B flits |
+| `--vcs-per-vnet` | 1 | one VC per vnet |
+| `--inj-vnet` | 0 | inject on vnet0 (request internal-die); only vnet0 has receiving agents |
+| `--xor-low-bit` | 22 | XOR-hash low bit (required for 32 dirs + default `--lines-per-dest=1024`) |
+
+### 3.2 Bare invocation (defaults apply)
+
+```bash
+./build/NULL_AIGCIC_NOC/gem5.opt -d log/aigcic_noc/mesh_4x6/uniform \
+    configs/example/aigcic_noc_synth_traffic.py \
+    --synthetic=uniform_random --injectionrate=0.99 \
+    --sim-cycles=50000000
+```
+
+> **Note on `--sim-cycles`**: the tester compares it against the raw
+> tick counter (1 GHz clock → 1 tick = 1 ps), i.e. `--sim-cycles=50000000`
+> simulates **50 000 clock cycles**, not 50 million.
+
+### 3.3 Burst-traffic example
+
+```bash
+./build/NULL_AIGCIC_NOC/gem5.opt -d log/aigcic_noc/mesh_4x6/burst_1k \
+    configs/example/aigcic_noc_synth_traffic.py \
+    --synthetic=uniform_random --injectionrate=0.99 \
+    --sim-cycles=50000000 \
+    --cacheline_size=1024 --data-msg-size=1024 --xor-low-bit=0
+```
+
+DATA responses then occupy `ceil(1024 B / 128 B) = 8` flits. Note that
+raising the line size changes the address encoding; with 1024 B lines the
+default `--xor-low-bit` no longer fits, hence `--xor-low-bit=0` (no XOR
+hashing) in this example.
+
+### 3.4 Full-fabric (no masking) example
+
+```bash
+./build/NULL_AIGCIC_NOC/gem5.opt -d log/aigcic_noc/mesh_4x8/uniform \
+    configs/example/aigcic_noc_synth_traffic.py \
+    --synthetic=uniform_random --injectionrate=0.99 \
+    --sim-cycles=50000000 \
+    --num-active-columns=0 --num-active-rows=0
+```
+
+### 3.5 Key parameters
+
+| Parameter | Meaning |
+|---|---|
+| `--num-cpus` / `--num-dirs` | number of L1s / DRAM-controller agents (= mesh routers each); mesh is `num_cpus` routers, `--mesh-rows` rows |
+| `--mesh-rows` | rows of the mesh (columns derived) |
+| `--synthetic` | traffic pattern: `uniform_random` (the only pattern compatible with active-column masking), `tornado`, `bit_complement`, `bit_reverse`, `bit_rotation`, `neighbor`, `shuffle`, `transpose` |
+| `--injectionrate` | packets/cycle/node (0..1) |
+| `--sim-cycles` | simulation length in **ticks** (see note above) |
+| `--data-msg-size` (+ `--cacheline_size`) | data payload bytes; flits = `ceil(payload / flit_size)` |
+| `--link-width-bits` | flit size in bits (default 1024) |
+| `--num-active-columns` / `--num-active-rows` | restrict traffic to the top-left `rows x cols` sub-mesh; 0 = full fabric |
+| `--inj-vnet` | 0 = request internal-die (default), 2 = response internal-die; 1/3 cross-die reserved |
+| `--switch-arbiter` | `round_robin`, `router_age_based`, `global_age_based` |
+| `--lines-per-dest`, `--xor-low-bit`, `--l1d_size`, `--l1d_assoc` | address-map knobs: spread traffic over many cache lines; the driver validates the address encoding against the XOR-hash bits |
+
+Output layout used in this repo:
+
+```
+log/aigcic_noc/mesh_4x6/<scenario>/stats.txt
+```
+
+`garnet_synth_traffic.py` still exists unmodified for the legacy
+`Garnet_standalone` / `X86_MI_example` builds, but the `AIGCIC_NOC`
+protocol only works through `aigcic_noc_synth_traffic.py`.
+
+---
+
+## 4. Instrumented statistics (this fork)
+
+Extra instrumentation added on top of stock gem5:
 
 | Stats (per router / network) | Meaning |
 |---|---|
@@ -78,90 +197,15 @@ GarnetNetwork, NetworkInterface).
 
 ---
 
-## 2. Building
+## 5. Performance analysis with `perf_analysis/analyze_mesh_bw.py`
+
+### 5.1 Single run (report to stdout)
 
 ```bash
-# pure NoC exploration build
-scons build/Garnet_standalone/gem5.opt -j <N>
-
-# coherence-protocol build (MI_example, X86)
-scons build/X86_MI_example/gem5.opt -j <N>
+python3 perf_analysis/analyze_mesh_bw.py log/aigcic_noc/mesh_4x6/uniform/stats.txt
 ```
 
-`<N>` = number of parallel jobs (e.g. 64). A debug binary is available by
-replacing `.opt` with `.debug`.
-
----
-
-## 3. Running a simulation
-
-All NoC runs use `configs/example/garnet_synth_traffic.py`. Output goes
-to the directory given by `-d`/`--outdir` (default `m5out/`), which
-receives `stats.txt`, `config.ini` and `command.txt`.
-
-### 3.1 Garnet_standalone example
-
-```bash
-./build/Garnet_standalone/gem5.opt -d log/garnet_standalone/mesh_4x6/round_robin \
-    configs/example/garnet_synth_traffic.py \
-    --network=garnet --topology=Mesh_XY \
-    --num-cpus=32 --num-dirs=32 --mesh-rows=4 \
-    --synthetic=uniform_random --injectionrate=0.99 \
-    --sim-cycles=50000000 \
-    --data-msg-size=8 \
-    --num-active-columns=6 --num-active-rows=4 \
-    --switch-arbiter round_robin
-```
-
-### 3.2 X86_MI_example example
-
-```bash
-./build/X86_MI_example/gem5.opt -d log/mi_example/mesh_4x6/global_age_based \
-    configs/example/garnet_synth_traffic.py \
-    --network=garnet --topology=Mesh_XY \
-    --num-cpus=32 --num-dirs=32 --mesh-rows=4 \
-    --synthetic=uniform_random --injectionrate=0.99 \
-    --sim-cycles=50000000 \
-    --data-msg-size=8 --lines-per-dest=1024 --l1d_size=1MiB --l1d_assoc=2 \
-    --xor-low-bit=22 \
-    --num-active-columns=6 --num-active-rows=4 \
-    --switch-arbiter global_age_based
-```
-
-### 3.3 Key parameters
-
-| Parameter | Meaning |
-|---|---|
-| `--num-cpus` / `--num-dirs` | number of L1 testers / directories (= mesh routers each); mesh is `num_cpus` routers, `--mesh-rows` rows |
-| `--mesh-rows` | rows of the mesh (columns derived) |
-| `--synthetic` | traffic pattern: `uniform_random`, `tornado`, `bit_complement`, `bit_reverse`, `bit_rotation`, `neighbor`, `shuffle`, `transpose` |
-| `--injectionrate` | packets/cycle/node (0..1) |
-| `--sim-cycles` | simulation length in cycles |
-| `--data-msg-size` | data payload bytes; `(size+8)/16` flits per data packet — 8 → 1 flit, 64 (default) → 5 flits |
-| `--num-active-columns` / `--num-active-rows` | restrict traffic to the top-left `rows x cols` sub-mesh (e.g. a 4x6 mesh on a 4x8 fabric); 0 = full mesh |
-| `--switch-arbiter` | switch-arbitration policy: `round_robin`, `router_age_based` (oldest-first by enqueue time at this router), `global_age_based` (oldest-first by source-NI enqueue time) |
-| `--lines-per-dest`, `--xor-low-bit`, `--l1d_size`, `--l1d_assoc` | MI_example address-map knobs: spread traffic over many cache lines to avoid same-line conflicts; the config validates that the address encoding stays inside the XOR-hash bits |
-| `--inj-vnet`, `--num-packets-max`, `--single-sender-id`, `--single-dest-id` | finer injection control |
-
-Output layout used in this repo:
-
-```
-log/
-├── garnet_standalone/mesh_4x6/<arbiter>/stats.txt
-└── mi_example/mesh_4x6/<arbiter>/stats.txt
-```
-
----
-
-## 4. Performance analysis with `perf_analysis/analyze_mesh_bw.py`
-
-### 4.1 Single run (report to stdout)
-
-```bash
-python3 perf_analysis/analyze_mesh_bw.py log/mi_example/mesh_4x6/global_age_based/stats.txt
-```
-
-### 4.2 Batch mode (directory scan)
+### 5.2 Batch mode (directory scan)
 
 ```bash
 python3 perf_analysis/analyze_mesh_bw.py ./log
@@ -171,8 +215,8 @@ Recursively scans the directory; every `stats.txt` found is analyzed and
 the report is written to `perf.txt` **next to the stats.txt**:
 
 ```
-[2/3] log/mi_example/mesh_4x6/global_age_based/stats.txt
-    -> log/mi_example/mesh_4x6/global_age_based/perf.txt
+[2/3] log/aigcic_noc/mesh_4x6/uniform/stats.txt
+    -> log/aigcic_noc/mesh_4x6/uniform/perf.txt
 batch done: 3 ok, 0 failed
 ```
 
@@ -180,7 +224,7 @@ A failing stats.txt only fails its own report (no half-written
 `perf.txt` is left behind). All CLI options below also apply in batch
 mode.
 
-### 4.3 Options
+### 5.3 Options
 
 | Option | Meaning |
 |---|---|
@@ -190,7 +234,7 @@ mode.
 | `--nodes-per-router`, `--active-local-links` | override controller/port accounting |
 | `--active-rows`, `--active-columns` | restrict the displayed/aggregated sub-mesh (auto from the run's `--num-active-*`) |
 
-### 4.4 What the report contains (in order)
+### 5.4 What the report contains (in order)
 
 1. **Run header** — mesh size, network cycles, capacity model, traffic
    summary (pkts/flits, cross-checked against `packets_injected` /
@@ -199,7 +243,7 @@ mode.
    `rows x cols` utilization matrices (% of 1 flit/cycle), reconstructed
    hop-by-hop from the traffic matrix under XY routing.
 3. **Local-port views** — per-router Local OUT/IN duty plus a per-link
-   breakdown per controller type (L1 / Dir).
+   breakdown per controller type (L1 / DRAM controller).
 4. **Router totals** — top-5 busiest routers, outbound flits/cycle vs.
    outport capacity.
 5. **Contention** — per-router input/output arbiter activity ratio

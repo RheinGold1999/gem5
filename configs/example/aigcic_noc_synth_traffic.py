@@ -129,11 +129,14 @@ parser.add_argument(
 parser.add_argument(
     "--inj-vnet",
     type=int,
-    default=-1,
-    choices=[-1, 0, 1, 2],
-    help="Only inject in this vnet (0, 1 or 2).\
-                        0 and 1 are 1-flit, 2 is 5-flit.\
-                        Set to -1 to inject randomly in all vnets.",
+    default=0,
+    choices=[-1, 0, 1, 2, 3],
+    help="Only inject in this vnet. AIGCIC_NOC vnet usage: 0 = request "
+                        "internal-die (default), 1 = request cross-die "
+                        "(reserved), 2 = response internal-die, 3 = response "
+                        "cross-die (reserved). Only vnet 0 has a receiving "
+                        "agent (the DRAM controllers); -1 injects randomly "
+                        "across all vnets.",
 )
 
 parser.add_argument(
@@ -190,6 +193,13 @@ Ruby.define_options(parser)
 # fabric. num_dirs must stay a power of two for check_address_encoding,
 # so the fabric keeps 32 routers/dirs and traffic is masked to the
 # top-left 4x6. Override with --num-active-columns=0 --num-active-rows=0.
+# 1024-bit links -> 128B flits: control messages (8B) and default data
+# messages (64B + 8B) are a single flit. For burst traffic raise the
+# payload together with the line size, e.g.
+#   --cacheline-size 1024 --data-msg-size 1024
+# (they must be passed together: data_msg_size <= cacheline_size is
+# enforced by the Ruby core). Burst flits = ceil(data_length / 128B);
+# the 8B header is NOT counted (see Network::Network).
 parser.set_defaults(
     network="garnet",
     topology="Mesh_XY",
@@ -198,6 +208,12 @@ parser.set_defaults(
     mesh_rows=4,
     num_active_columns=6,
     num_active_rows=4,
+    # Ideal DRAM: fixed 1-cycle latency, unlimited bandwidth (see
+    # setup_memory_controllers in configs/ruby/Ruby.py) so the NoC is
+    # the only bottleneck.
+    mem_type="SimpleMemory",
+    link_width_bits=1024,
+    vcs_per_vnet=1,
     # 32 dirs -> 5 dest bits above the block offset; with the default
     # --lines-per-dest=1024 (10 line-select bits) address bits reach
     # bit 21, so raise the XOR-hash low bit.

@@ -63,7 +63,11 @@ Network::Network(const Params &p)
 
     fatal_if(p.data_msg_size > p.ruby_system->getBlockSizeBytes(),
              "%s: data message size > cache line size", name());
-    m_data_msg_size = p.data_msg_size + m_control_msg_size;
+    // AIGCIC_NOC: size data messages by payload only. The message header
+    // rides inside the first flit and is not counted, so a burst of
+    // data_length bytes occupies ceil(data_length / flit_size) flits.
+    // Control messages keep using m_control_msg_size.
+    m_data_msg_size = p.data_msg_size;
 
     m_ruby_system = p.ruby_system;
     m_ruby_system->registerNetwork(this);

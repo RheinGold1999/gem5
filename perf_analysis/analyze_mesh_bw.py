@@ -124,11 +124,10 @@ def parse_stats(path):
                 continue
             mf = flx.match(line)
             if mf:
-                nums = numrx.findall(mf.group(2))
-                if nums:
+                vals = parse_stat_vector(mf.group(2))
+                if vals:
                     totals[mf.group(1)] = \
-                        [float(x) for x in nums] if len(nums) > 1 \
-                        else float(nums[0])
+                        vals if len(vals) > 1 else vals[0]
                 continue
             if residency_ticks is None and "pwrStateResidencyTicks" in line:
                 residency_ticks = int(line.split()[1])
@@ -139,6 +138,30 @@ def parse_stats(path):
                 totals[f"{mt.group(1)}::total" if mt.group(2) else mt.group(1)] = \
                     int(mt.group(3))
     return data, ctrl, totals, residency_ticks, rstat, bufs
+
+
+def parse_stat_vector(col):
+    """Parse a gem5 one-line vector stat column, keeping positions.
+
+    gem5 prints vectors as '|v0 |v1 |nan |v3 (Unspecified)'; the idle
+    vnets print 'nan', which a plain number scan would drop and shift
+    every later label by one. Returns floats with None for nan.
+    """
+    num = re.compile(r"[-+]?\d*\.?\d+(?:[eE][+-]?\d+)?")
+    if "|" not in col:
+        m = num.search(col)
+        return [float(m.group())] if m else []
+    out = []
+    for tok in col.split("|")[1:]:
+        tok = tok.strip().split()[0] if tok.strip() else ""
+        if tok.lower().lstrip("+-") == "nan":
+            out.append(None)                   # idle vnet, no samples
+            continue
+        try:
+            out.append(float(tok))
+        except ValueError:
+            out.append(None)                   # unparseable
+    return out
 
 
 def read_config(path):
@@ -996,21 +1019,23 @@ def run_analysis(stats_path, args):
             print(f"  flit lifetime P75     : {_cyc(lt_p75):8.2f} cyc")
         if lt_max is not None:
             print(f"  flit lifetime MAX     : {_cyc(lt_max):8.2f} cyc")
-        vnet_tot = totals.get("average_flit_vnet_latency")
-        if isinstance(vnet_tot, list):
-            vnet_que = totals.get("average_flit_vqueue_latency")
-            vnet_net = ([t - q for t, q in zip(vnet_tot, vnet_que)]
-                        if isinstance(vnet_que, list) else None)
-            print("  per-vnet lifetime     : " + " | ".join(
-                f"vnet{i} {_cyc(v):.2f}" for i, v in enumerate(vnet_tot))
-                + " cyc")
-            if vnet_net is not None:
-                print("  per-vnet network part : " + " | ".join(
-                    f"vnet{i} {_cyc(v):.2f}" for i, v in enumerate(vnet_net))
-                    + " cyc")
-                print("  per-vnet queueing part: " + " | ".join(
-                    f"vnet{i} {_cyc(v):.2f}" for i, v in enumerate(vnet_que))
-                    + " cyc")
+        # NOTE: garnet's average_flit_vnet_latency is m_flit_network_latency
+        # / m_flits_received per vnet, i.e. the NETWORK part per vnet (the
+        # stat name is misleading); average_flit_vqueue_latency is the
+        # queueing part. Per-vnet lifetime = network + queueing. Idle
+        # vnets have no samples (nan) and print as '-'.
+        vnet_net = totals.get("average_flit_vnet_latency")
+        vnet_que = totals.get("average_flit_vqueue_latency")
+        if isinstance(vnet_net, list) and isinstance(vnet_que, list):
+            def _fmt(vals):
+                return " | ".join(
+                    "-" if v is None else f"vnet{i} {_cyc(v):.2f}"
+                    for i, v in enumerate(vals)) + " cyc"
+            vnet_lt = [None if (n is None or q is None) else n + q
+                       for n, q in zip(vnet_net, vnet_que)]
+            print("  per-vnet lifetime     : " + _fmt(vnet_lt))
+            print("  per-vnet network part : " + _fmt(vnet_net))
+            print("  per-vnet queueing part: " + _fmt(vnet_que))
         n_recv = totals.get("flits_received::total")
         if n_recv:
             dist = ("; lifetime median/p75/max over those "
