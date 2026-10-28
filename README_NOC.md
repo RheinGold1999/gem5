@@ -59,7 +59,8 @@ activated.
 * Link width is **1024 bits** (128 B) by default → 1 flit per 128 B.
 * Control messages (GETX, WB_ACK) are 8 B → **1 flit**.
 * Data messages (DATA, PUTX) are sized by payload →
-  **1 flit** for the default 64 B payload.
+  **1 flit** for the default 128 B payload (`--data-msg-size=128`, with
+  the Ruby line size raised to match: `--cacheline_size=128`).
 * Burst: payloads larger than one flit occupy
   `ceil(data_length / 1024 bits)` flits. The message header is **not**
   counted (see `Network::Network` in `src/mem/ruby/network/Network.cc`).
@@ -118,7 +119,8 @@ a **logical 4x6 mesh on a 4x8 fabric**:
 | `--link-width-bits` | 1024 | 128 B flits |
 | `--vcs-per-vnet` | 1 | one VC per vnet |
 | `--inj-vnet` | 0 | inject on vnet0 (request internal-die); only vnet0 has receiving agents |
-| `--xor-low-bit` | 22 | XOR-hash low bit (required for 32 dirs + default `--lines-per-dest=1024`) |
+| `--xor-low-bit` | 22 | XOR-hash low bit (required for 32 dirs + default `--lines-per-dest=1024` at 128 B lines) |
+| `--data-msg-size` / `--cacheline_size` | 128 / 128 | data payload = one full flit; the Ruby line size is raised together so `data_msg_size ≤ cacheline_size` holds |
 | `--mem-type` | `SimpleMemory` | **ideal DRAM**: fixed 1-cycle latency, unlimited bandwidth (`configs/ruby/Ruby.py` sets this for `AIGCIC_NOC` builds), so the NoC is the only bottleneck. Override with e.g. `--mem-type=DDR4_1600_8x8` for a real memory system |
 
 Ruby-sequencer side (set in `configs/ruby/AIGCIC_NOC.py`, not CLI):
@@ -285,6 +287,9 @@ All runs: default config (ideal DRAM, 4x6 active mesh on the 4x8
 fabric, 1024-bit links, 1-flit packets, `max_outstanding_requests=256`),
 `--synthetic=uniform_random --injectionrate=0.99 --sim-cycles=200000000`
 (= 200 000 cycles). Data in `log/aigcic_noc/mesh_4x6/vc{1..4}_ideal/`.
+(Measured with the 64 B-line default before the 128 B switch — packet
+and flit counts are identical: every request and response is 1 flit
+either way; only the address mapping shifts by one bit.)
 
 ### 6.1 Throughput
 

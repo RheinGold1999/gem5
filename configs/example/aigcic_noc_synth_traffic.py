@@ -214,9 +214,14 @@ parser.set_defaults(
     mem_type="SimpleMemory",
     link_width_bits=1024,
     vcs_per_vnet=1,
+    # 128 B data payload: with 1024-bit links a DATA/PUTX packet is
+    # still exactly 1 flit (ceil(128B/128B)); the Ruby line size must
+    # be raised together with it (data_msg_size <= cacheline_size).
+    cacheline_size=128,
+    data_msg_size=128,
     # 32 dirs -> 5 dest bits above the block offset; with the default
-    # --lines-per-dest=1024 (10 line-select bits) address bits reach
-    # bit 21, so raise the XOR-hash low bit.
+    # --lines-per-dest=1024 (10 line-select bits) and 128 B lines the
+    # address bits reach bit 22, so the XOR-hash low bit sits at 22.
     xor_low_bit=22,
 )
 
