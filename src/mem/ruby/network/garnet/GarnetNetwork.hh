@@ -164,6 +164,16 @@ class GarnetNetwork : public Network
             latency > 0xFFFFFFFFULL ? 0xFFFFFFFFULL : (uint32_t)latency);
     }
 
+    // Record the NETWORK part (links + router pipelines, incl. the source
+    // NI VC wait for credits) of one delivered flit, in ticks, for the
+    // network-part median / p75 / max quantile stats.
+    void
+    increment_flit_network_dist(Tick latency, int vnet)
+    {
+        m_flit_network_dist_samples.push_back(
+            latency > 0xFFFFFFFFULL ? 0xFFFFFFFFULL : (uint32_t)latency);
+    }
+
     void
     increment_total_hops(int hops)
     {
@@ -209,6 +219,13 @@ class GarnetNetwork : public Network
     statistics::Scalar m_flit_lifetime_median;
     statistics::Scalar m_flit_lifetime_p75;
     statistics::Scalar m_flit_lifetime_max;
+
+    // NETWORK-part distribution (links + router pipelines) of delivered
+    // flits, for the network-part quantile stats.
+    std::vector<uint32_t> m_flit_network_dist_samples;
+    statistics::Scalar m_flit_network_latency_median;
+    statistics::Scalar m_flit_network_latency_p75;
+    statistics::Scalar m_flit_network_latency_max;
 
     statistics::Formula m_avg_flit_vnet_latency;
     statistics::Formula m_avg_flit_vqueue_latency;

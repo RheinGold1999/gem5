@@ -511,6 +511,18 @@ GarnetNetwork::regStats()
         .name(name() + ".flit_lifetime_max")
         ;
 
+    m_flit_network_latency_median
+        .name(name() + ".flit_network_latency_median")
+        ;
+
+    m_flit_network_latency_p75
+        .name(name() + ".flit_network_latency_p75")
+        ;
+
+    m_flit_network_latency_max
+        .name(name() + ".flit_network_latency_max")
+        ;
+
     for (int i = 0; i < m_virtual_networks; i++) {
         m_flits_received.subname(i, csprintf("vnet-%i", i));
         m_flits_injected.subname(i, csprintf("vnet-%i", i));
@@ -628,12 +640,23 @@ GarnetNetwork::collateStats()
         m_flit_lifetime_p75 = quantile(s, 0.75);
         m_flit_lifetime_max = s.back();
     }
+
+    // NETWORK-part distribution (links + router pipelines): median /
+    // p75 / max, in ticks.
+    std::vector<uint32_t>& sn = m_flit_network_dist_samples;
+    std::sort(sn.begin(), sn.end());
+    if (!sn.empty()) {
+        m_flit_network_latency_median = quantile(sn, 0.5);
+        m_flit_network_latency_p75 = quantile(sn, 0.75);
+        m_flit_network_latency_max = sn.back();
+    }
 }
 
 void
 GarnetNetwork::resetStats()
 {
     m_flit_lifetime_samples.clear();
+    m_flit_network_dist_samples.clear();
     for (int i = 0; i < m_routers.size(); i++) {
         m_routers[i]->resetStats();
     }

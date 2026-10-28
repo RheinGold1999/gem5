@@ -176,6 +176,12 @@ NetworkInterface::incrementStats(flit *t_flit)
         dest_queueing_delay + cyclesToTicks(Cycles(1));
     m_net_ptr->increment_flit_lifetime(flit_lifetime, vnet);
 
+    // NETWORK-part distribution (links + router pipelines, incl. the
+    // source-NI VC wait for credits) for the median/p75/max stats.
+    // Sampled WITHOUT the final-link cycle that lifetime adds back, so
+    // the distribution is consistent with average_flit_network_latency.
+    m_net_ptr->increment_flit_network_dist(network_delay, vnet);
+
     if (t_flit->get_type() == TAIL_ || t_flit->get_type() == HEAD_TAIL_) {
         m_net_ptr->increment_received_packets(vnet);
         m_net_ptr->increment_packet_network_latency(network_delay, vnet);

@@ -99,7 +99,9 @@ def parse_stats(path):
     # Values are in TICKS; converted to network cycles by the caller.
     flx = re.compile(
         r"^system\.ruby\.network\.(average_flit_\w+|"
-        r"flit_lifetime_median|flit_lifetime_p75|flit_lifetime_max)\s+(.*)$")
+        r"flit_lifetime_median|flit_lifetime_p75|flit_lifetime_max|"
+        r"flit_network_latency_median|flit_network_latency_p75|"
+        r"flit_network_latency_max)\s+(.*)$")
     numrx = re.compile(r"[\d.]+(?:[eE][+-]?\d+)?")
     with open(path) as f:
         for line in f:
@@ -1000,16 +1002,11 @@ def run_analysis(stats_path, args):
         fl_tot = totals["average_flit_latency"]
         fl_net = totals.get("average_flit_network_latency")
         fl_que = totals.get("average_flit_queueing_latency")
-        print(f"\n--- flit whole-lifetime latency (src NI enqueue -> dest NI "
-              f"dequeue; network-wide averages) ---")
-        print(f"  flit lifetime total   : {_cyc(fl_tot):8.2f} cyc "
+        print(f"\n--- flit latency (src NI enqueue -> dest NI dequeue + "
+              f"drain; network-wide over delivered flits) ---")
+        print(f"  [whole lifetime = network + queueing]")
+        print(f"  flit lifetime MEAN    : {_cyc(fl_tot):8.2f} cyc "
               f"({fl_tot:.0f} ticks)")
-        if fl_net is not None:
-            print(f"  flit network part     : {_cyc(fl_net):8.2f} cyc   "
-                  f"(links + router pipelines)")
-        if fl_que is not None:
-            print(f"  flit queueing part    : {_cyc(fl_que):8.2f} cyc   "
-                  f"(src-NI injection queue + dest-NI out queue)")
         lt_med = totals.get("flit_lifetime_median")
         lt_p75 = totals.get("flit_lifetime_p75")
         lt_max = totals.get("flit_lifetime_max")
@@ -1019,6 +1016,21 @@ def run_analysis(stats_path, args):
             print(f"  flit lifetime P75     : {_cyc(lt_p75):8.2f} cyc")
         if lt_max is not None:
             print(f"  flit lifetime MAX     : {_cyc(lt_max):8.2f} cyc")
+        print(f"  [network part only = links + router pipelines]")
+        if fl_net is not None:
+            print(f"  network part MEAN     : {_cyc(fl_net):8.2f} cyc")
+        nt_med = totals.get("flit_network_latency_median")
+        nt_p75 = totals.get("flit_network_latency_p75")
+        nt_max = totals.get("flit_network_latency_max")
+        if nt_med is not None:
+            print(f"  network part MEDIAN   : {_cyc(nt_med):8.2f} cyc")
+        if nt_p75 is not None:
+            print(f"  network part P75      : {_cyc(nt_p75):8.2f} cyc")
+        if nt_max is not None:
+            print(f"  network part MAX      : {_cyc(nt_max):8.2f} cyc")
+        print(f"  [queueing part = src-NI injection queue + dest-NI out queue]")
+        if fl_que is not None:
+            print(f"  queueing part MEAN    : {_cyc(fl_que):8.2f} cyc")
         # NOTE: garnet's average_flit_vnet_latency is m_flit_network_latency
         # / m_flits_received per vnet, i.e. the NETWORK part per vnet (the
         # stat name is misleading); average_flit_vqueue_latency is the
