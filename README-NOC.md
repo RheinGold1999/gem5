@@ -169,7 +169,40 @@ hashing) in this example.
     --num-active-columns=0 --num-active-rows=0
 ```
 
-### 3.5 Key parameters
+### 3.5 SystemC/TLM demo (external IP instead of synthetic traffic)
+
+A minimal gem5-systemc demo replaces the synthetic testers with a
+SystemC master IP talking TLM through the in-tree bridge:
+
+```
+AigcicScMaster (SC_MODULE, TLM initiator)
+  -> TlmToGem5Bridge32 -> RubySequencer -> AIGCIC_NOC -> Garnet -> dir -> SimpleMemory
+```
+
+Build (adds the IP on top of the normal build; one-time +~1 min):
+
+```bash
+scons build/NULL_AIGCIC_NOC/gem5.opt EXTRAS=extras/aigcic_sc -j <N>
+```
+
+Run (4 nodes, 2x2 mesh, 10 reads/node, exits when every response
+arrived):
+
+```bash
+./build/NULL_AIGCIC_NOC/gem5.opt -d log/aigcic_sc/demo \
+    configs/example/aigcic_sc_demo.py [--num-cpus=4 --num-dirs=4 \
+    --mesh-rows=2 --num-requests=10 --period-ns=100]
+```
+
+The master uses the **4-phase AT handshake** (`nb_transport_fw`) — the
+blocking `b_transport` path of `TlmToGem5Bridge` is atomic and would
+bypass the NoC. Addresses follow the synthetic-traffic layout
+(`dest << block_offset`, line 0), so the address-map checks and the
+Garnet stats/analyzer (`analyze_mesh_bw.py`) work unchanged. Reference
+data: `log/aigcic_sc/demo/` (flit lifetime MEAN ≈ 9.7 cycles at 1 hop,
+1 GHz).
+
+### 3.6 Key parameters
 
 | Parameter | Meaning |
 |---|---|

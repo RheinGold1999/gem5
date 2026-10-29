@@ -1,0 +1,4 @@
+Import('*')
+
+SimObject('AigcicScMaster.py', sim_objects=['AigcicScMaster'])
+Source('sc_master.cc')
