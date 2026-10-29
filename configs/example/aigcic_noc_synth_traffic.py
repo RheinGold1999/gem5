@@ -156,6 +156,28 @@ parser.add_argument(
 )
 
 parser.add_argument(
+    "--mpu-id",
+    type=int,
+    default=0,
+    help="mpu_id of the simulated die (MPU-52 layout, bits [39:37])",
+)
+parser.add_argument(
+    "--gpu-id",
+    type=int,
+    default=0,
+    help="gpu_id of the simulated die (MPU-52 layout, bits [50:41])",
+)
+parser.add_argument(
+    "--cross-die-ratio",
+    type=float,
+    default=0.0,
+    help="Fraction of requests addressed to a remote die: the tester "
+         "stamps a remote mpu_id (!= --mpu-id) into bits [39:37]; the L1 "
+         "issues those requests on the cross-die vnets (vnet1 request / "
+         "vnet3 response). mpu52 layout only.",
+)
+
+parser.add_argument(
     "--lines-per-dest",
     type=int,
     default=None,
@@ -380,6 +402,14 @@ def check_address_encoding(args):
         )
 
 
+if args.cross_die_ratio > 0 and args.addr_layout != "mpu52":
+    fatal(
+        "--cross-die-ratio requires --addr-layout=mpu52: the legacy "
+        "layout's address space does not cover remote-die addresses."
+    )
+if args.cross_die_ratio > 0 and not (0 <= args.mpu_id <= 7):
+    fatal("--mpu-id must be within the 3-bit MPU-52 field [39:37] (0..7).")
+
 # --- --addr-layout-specific defaults (after parse, before the checks) ---
 if args.addr_layout == "mpu52":
     # Full per-node 4GiB space: 4GiB / block size lines per destination.
@@ -421,6 +451,9 @@ cpus = [
         lines_per_dest=args.lines_per_dest,
         block_offset=int(math.log2(args.cacheline_size)),
         dest_shift=dest_shift,
+        mpu_id=args.mpu_id,
+        gpu_id=args.gpu_id,
+        cross_die_ratio=args.cross_die_ratio,
     )
     for i in range(args.num_cpus)
 ]
@@ -437,6 +470,16 @@ if args.addr_layout == "mpu52":
         for row, col in [divmod(i, num_cols)]
     ]
     system = System(cpu=cpus, mem_ranges=mem_ranges)
+    if args.cross_die_ratio > 0:
+        # Cross-die requests keep the foreign die fields (gpu_id [50:41],
+        # is_global [40], mpu_id [39:37]) in the address, so a requestor
+        # legitimately addresses a space larger than this die's physmem.
+        # Declare it as "valid physical address not backed by physmem"
+        # (System::isMemAddr accepts external_memory_ranges), otherwise
+        # the sequencer would reject those packets as PIO addresses.
+        # [0, 2^51) covers every gpu_id x mpu_id x node field of the
+        # MPU-52 space (bits [50:0]; the is_host bit [51] stays out).
+        system.external_memory_ranges = [AddrRange(0, size=1 << 51)]
 else:
     system = System(cpu=cpus, mem_ranges=[AddrRange(args.mem_size)])
 

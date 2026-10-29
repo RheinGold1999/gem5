@@ -81,6 +81,9 @@ GarnetSyntheticTraffic::GarnetSyntheticTraffic(const Params &p)
       size(p.memory_size),
       blockSizeBits(p.block_offset),
       destShift(p.dest_shift),
+      mpuId(p.mpu_id),
+      gpuId(p.gpu_id),
+      crossDieRatio(p.cross_die_ratio),
       numDestinations(p.num_dest),
       linesPerDest(p.lines_per_dest),
       simCycles(p.sim_cycles),
@@ -283,6 +286,13 @@ GarnetSyntheticTraffic::generatePkt()
     // node's per-node window via range-based directory mapping, so no
     // XOR hashing is involved.
     Addr paddr;
+    // Cross-die traffic: with probability cross_die_ratio, stamp a
+    // remote mpu_id (0..7, != local) into bits [39:37] of the address.
+    // The L1 compares the die fields against its own identity and issues
+    // mismatching requests on the cross-die vnets (vnet1/vnet3). gpu_id
+    // is kept local (a gpu_id mismatch works identically).
+    bool remoteDie = crossDieRatio > 0 &&
+        rng->random<double>() < crossDieRatio;
     if (destShift > 0) {
         // `destination` is a mesh router id (so the active-region mask
         // and the traffic patterns operate in router space, as in the
@@ -291,11 +301,31 @@ GarnetSyntheticTraffic::generatePkt()
         //   (bits [36:34])  =>  field = (col << 2) | row.
         unsigned node_x = destination / numColumns;  // mesh row
         unsigned node_y = destination % numColumns;  // mesh column
+        if (remoteDie) {
+            // Cross-die traffic leaves the die through the die-to-die
+            // link on mesh column 0: route to the column-0 node in the
+            // same row as the source. The dir agent there proxies the
+            // remote die's memory.
+            node_y = 0;
+        }
         paddr = (Addr)((node_y << 2) | node_x) << destShift;
         if (linesPerDest > 1) {
             Addr line_sel = rng->random<unsigned>(0, linesPerDest - 1);
             paddr |= line_sel << blockSizeBits;
         }
+        // Die identity in the address: this die's own id by default, or
+        // a remote mpu_id (never equal to the local one) for cross-die
+        // requests. The L1 compares these fields against its own
+        // identity to decide the request vnet.
+        unsigned mpu = mpuId;
+        if (remoteDie) {
+            mpu = rng->random<unsigned>(0, 6);
+            if (mpu >= mpuId) {
+                mpu += 1;  // uniform over {0..7} \ {mpuId}
+            }
+        }
+        paddr |= (Addr)(mpu & 0x7) << 37;
+        paddr |= (Addr)(gpuId & 0x3ff) << 41;
     } else {
         paddr = destination;
         if (linesPerDest > 1) {
@@ -303,6 +333,13 @@ GarnetSyntheticTraffic::generatePkt()
             paddr |= line_sel << ceilLog2(numDestinations);
         }
         paddr <<= blockSizeBits;
+        if (remoteDie) {
+            unsigned remoteMpu = rng->random<unsigned>(0, 6);
+            if (remoteMpu >= mpuId) {
+                remoteMpu += 1;  // uniform over {0..7} \ {mpuId}
+            }
+            paddr |= (Addr)remoteMpu << 37;
+        }
     }
     unsigned access_size = 1; // Does not affect Ruby simulation
 

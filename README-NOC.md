@@ -210,9 +210,9 @@ in the 52-bit address space instead of the legacy block-interleaved
 channels:
 
 ```
-bit:  51    50    41 40   39  37 36  34 33 32  31              7     0
-     |host | gpu_id |glob|mpu_id|node_y|node|   line_sel    | offset |
-      =0    =0      =0    =0   3bits _x 2b  (up to 25 bits)   128B
+bit:  51    50    41  40    39   37    36  34   33  32  31          7    0
+     | host | gpu_id | glob | mpu_id | node_y | node_x | line_sel | offset |
+       =0     =0       =0     =0        3bits   2bits                128B
 ```
 
 * `node_x` [33:32] = mesh **row** (2 bits), `node_y` [36:34] = mesh
@@ -234,6 +234,48 @@ bit:  51    50    41 40   39  37 36  34 33 32  31              7     0
 * **mpu52 is the default layout since the 128 B-data switch**; pass
   `--addr-layout=legacy` to reproduce the section 6 baseline datasets
   (which were measured with the legacy layout).
+
+#### Cross-die traffic (vnet1 / vnet3)
+
+The simulated mesh has its own die identity (`--mpu-id`, `--gpu-id`,
+default 0 = bits [39:37] / [50:41]). A request whose address carries a
+different `mpu_id` or `gpu_id` is **cross-die traffic**:
+
+* the L1 issues it on **vnet1** (`requestFromCacheXD`) and the response
+  comes back on **vnet3** (`responseToCacheXD`); the cache entry records
+  `CrossDie` so its later writeback also uses vnet1;
+* cross-die requests are sent to the **column-0 node in the source's
+  row** (the die-to-die link side), whose DRAM-controller agent proxies
+  the remote die's memory;
+* the dir answers cross-die requests itself (one
+  `to_memory_controller_latency`), never touching this die's memory
+  port, and the L1 routes with the die fields replaced by the local
+  identity (`localDieAddr()`), so the address map stays contiguous.
+
+Enable traffic with `--cross-die-ratio=<0..1>` (requires mpu52):
+
+```bash
+./build/NULL_AIGCIC_NOC/gem5.opt -d log/aigcic_noc/mpu52_crossdie/xd0.2 \
+    configs/example/aigcic_noc_synth_traffic.py \
+    --synthetic=uniform_random --injectionrate=0.99 --sim-cycles=200000000 \
+    --vcs-per-vnet=2 --cross-die-ratio=0.2
+```
+
+Cross-die reference sweep (VC=2, inj=0.99, 200k cycles,
+`log/aigcic_noc/mpu52_crossdie/xd*`):
+
+| cross-die share | 0 | 10% | 20% | 30% | 50% |
+|---|---|---|---|---|---|
+| packets/cyc/node | 0.430 | 0.444 | **0.456** | 0.337 | 0.218 |
+| busiest E-link | 65.0% | 67.4% | 69.0% | 71.9% | 69.3% |
+| avg hops | 3.18 | 3.23 | 3.29 | 3.01 | 2.65 |
+| vnet1 lifetime (cyc) | - | 27 | 162 | 880 | 1419 |
+| vnet3 lifetime (cyc) | - | 15 | 18 | 14 | 14 |
+
+Reading: up to ~20% cross-die the mesh still absorbs the extra traffic
+(the column-0 funnel is not yet the limiter), beyond that the funnel
+into the die-to-die side saturates and vnet1 latency explodes while the
+return path (vnet3) stays at link latency.
 
 Reference mpu52 sweep (same protocol as section 6, 200 k cycles):
 `log/aigcic_noc/mpu52_mesh_4x6/vc{1..4}/` — throughput 0.198 / 0.430 /

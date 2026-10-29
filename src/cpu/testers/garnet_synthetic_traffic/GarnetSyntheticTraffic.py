@@ -37,6 +37,19 @@ class GarnetSyntheticTraffic(ClockedObject):
     cxx_class = "gem5::GarnetSyntheticTraffic"
 
     block_offset = Param.Int(6, "block offset in bits")
+    mpu_id = Param.UInt32(
+        0, "mpu_id of the die this tester lives in (address die-field check)"
+    )
+    gpu_id = Param.UInt32(
+        0, "gpu_id of the die this tester lives in"
+    )
+    cross_die_ratio = Param.Float(
+        0.0,
+        "Fraction of requests addressed to a remote die: a remote mpu_id "
+        "(different from mpu_id, 0..7) is stamped into bits [39:37] of the "
+        "generated address, which makes the L1 issue them on the cross-die "
+        "vnets (vnet1/vnet3)",
+    )
     dest_shift = Param.UInt64(
         0,
         "Bit position of the destination field in the generated address. "

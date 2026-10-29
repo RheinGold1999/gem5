@@ -39,6 +39,13 @@ machine(MachineType:L1Cache, "AIGCIC NoC L1 Cache")
       Cycles issue_latency := 2;
       bool send_evictions;
 
+      // THIS die's identity in the MPU-52 address space. A request whose
+      // address carries a different mpu_id or gpu_id is cross-die traffic
+      // and travels on vnet1 (request) / vnet3 (response) -- see
+      // isCrossDie().
+      int mpu_id := 0;
+      int gpu_id := 0;
+
       // NETWORK BUFFERS
       // vnet0: request internal-die, vnet2: response internal-die
       MessageBuffer * requestFromCache, network="To", virtual_network="0",
@@ -77,6 +84,9 @@ machine(MachineType:L1Cache, "AIGCIC NoC L1 Cache")
     Load,       desc="Load request from processor";
     Ifetch,     desc="Ifetch request from processor";
     Store,      desc="Store request from processor";
+    Load_XD,    desc="Load request, destination on another die (vnet1)";
+    Ifetch_XD,  desc="Ifetch request, cross-die (vnet1)";
+    Store_XD,   desc="Store request, cross-die (vnet1)";
 
     // From network (response vnet)
     Data,       desc="Data from network (internal-die vnet2)";
@@ -85,7 +95,8 @@ machine(MachineType:L1Cache, "AIGCIC NoC L1 Cache")
     Writeback_Ack_XD, desc="Writeback ack (cross-die vnet3)";
 
     // From processor
-    Replacement,  desc="Replace a block";
+    Replacement,  desc="Replace a block (internal-die line)";
+    Replacement_XD, desc="Replace a block (cross-die line, PUTX on vnet1)";
   }
 
   // STRUCTURE DEFINITIONS
@@ -93,6 +104,7 @@ machine(MachineType:L1Cache, "AIGCIC NoC L1 Cache")
   structure(Entry, desc="...", interface="AbstractCacheEntry") {
     State CacheState,        desc="cache state";
     bool Dirty,              desc="Is the data dirty (different than memory)?";
+    bool CrossDie,           desc="line was fetched from another die; its PUTX must go on vnet1";
     DataBlock DataBlk,       desc="Data in the block";
   }
 
@@ -138,6 +150,40 @@ machine(MachineType:L1Cache, "AIGCIC NoC L1 Cache")
     } else {
       error("Invalid RubyRequestType");
     }
+  }
+
+  Event mandatory_request_type_to_event_xd(RubyRequestType type) {
+   if (type == RubyRequestType:LD) {
+      return Event:Load_XD;
+    } else if (type == RubyRequestType:IFETCH) {
+      return Event:Ifetch_XD;
+    } else if ((type == RubyRequestType:ST) || (type == RubyRequestType:ATOMIC)) {
+      return Event:Store_XD;
+    } else {
+      error("Invalid RubyRequestType");
+    }
+  }
+
+  // MPU-52 layout: addr[39:37] mpu_id (3 bits), addr[50:41] gpu_id
+  // (10 bits). A request whose die fields differ from THIS die's
+  // identity is cross-die traffic: it is issued on vnet1 and answered
+  // on vnet3 (the destination node's dir agent proxies the remote
+  // memory).
+  bool isCrossDie(Addr addr) {
+    // addr[39:37] = mpu_id, addr[50:41] = gpu_id; SLICC has no hex
+    // literals and no Addr shifts, so use / and % with decimal
+    // constants (2^37 and 2^41).
+    return ((addr / 137438953472) % 8) != mpu_id ||
+           ((addr / 2199023255552) % 1024) != gpu_id;
+  }
+
+  // Address of the same node/line but carrying THIS die's identity
+  // instead of the (foreign) one in `addr`. The local address map is
+  // registered under this die's gpu_id/mpu_id, so the routing lookup
+  // must use it; the message keeps the original address.
+  Addr localDieAddr(Addr addr) {
+    return (addr % 137438953472) + (mpu_id * 137438953472) +
+           (gpu_id * 2199023255552);
   }
 
   State getState(TBE tbe, Entry cache_entry, Addr addr) {
@@ -211,6 +257,7 @@ machine(MachineType:L1Cache, "AIGCIC NoC L1 Cache")
   // NETWORK PORTS
 
   out_port(requestNetwork_out, RequestMsg, requestFromCache);
+  out_port(requestXDNetwork_out, RequestMsg, requestFromCacheXD);
   out_port(responseNetwork_out, ResponseMsg, responseFromCache);
 
   in_port(responseXDNetwork_in, ResponseMsg, responseToCacheXD) {
@@ -265,13 +312,24 @@ machine(MachineType:L1Cache, "AIGCIC NoC L1 Cache")
           // Check if the line we want to evict is not locked
           Addr addr := cacheMemory.cacheProbe(in_msg.LineAddress);
           check_on_cache_probe(mandatoryQueue_in, addr);
-          trigger(Event:Replacement, addr,
-                  getCacheEntry(addr),
-                  TBEs[addr]);
+          if (getCacheEntry(addr).CrossDie) {
+            trigger(Event:Replacement_XD, addr,
+                    getCacheEntry(addr),
+                    TBEs[addr]);
+          } else {
+            trigger(Event:Replacement, addr,
+                    getCacheEntry(addr),
+                    TBEs[addr]);
+          }
         }
         else {
-          trigger(mandatory_request_type_to_event(in_msg.Type), in_msg.LineAddress,
-                  cache_entry, TBEs[in_msg.LineAddress]);
+          if (isCrossDie(in_msg.LineAddress)) {
+            trigger(mandatory_request_type_to_event_xd(in_msg.Type),
+                    in_msg.LineAddress, cache_entry, TBEs[in_msg.LineAddress]);
+          } else {
+            trigger(mandatory_request_type_to_event(in_msg.Type),
+                    in_msg.LineAddress, cache_entry, TBEs[in_msg.LineAddress]);
+          }
         }
       }
     }
@@ -296,6 +354,36 @@ machine(MachineType:L1Cache, "AIGCIC NoC L1 Cache")
       out_msg.Type := CoherenceRequestType:PUTX;
       out_msg.Requestor := machineID;
       out_msg.Destination.add(mapAddressToMachine(address, MachineType:Directory));
+      out_msg.DataBlk := cache_entry.DataBlk;
+      out_msg.MessageSize := MessageSizeType:Data;
+    }
+  }
+
+  // MPU-52: the die fields (gpu_id [50:41], is_global [40], mpu_id
+  // [39:37]) identify the owning die, not a location inside the local
+  // address map. The destination dir is found by dropping them
+  // (address % 2^37), so cross-die requests land on the local node that
+  // proxies the remote die's memory; the message itself keeps the full
+  // address so the requestor and the dir still agree on the line.
+  action(a_issueRequestXD, "ax", desc="Issue a cross-die GETX (vnet1)") {
+    enqueue(requestXDNetwork_out, RequestMsg, issue_latency) {
+      out_msg.addr := address;
+      out_msg.Type := CoherenceRequestType:GETX;
+      out_msg.Requestor := machineID;
+      out_msg.Destination.add(mapAddressToMachine(localDieAddr(address),
+                                                  MachineType:Directory));
+      out_msg.MessageSize := MessageSizeType:Control;
+    }
+  }
+
+  action(b_issuePUTXD, "bx", desc="Issue a cross-die PUTX (vnet1)") {
+    enqueue(requestXDNetwork_out, RequestMsg, issue_latency) {
+      assert(is_valid(cache_entry));
+      out_msg.addr := address;
+      out_msg.Type := CoherenceRequestType:PUTX;
+      out_msg.Requestor := machineID;
+      out_msg.Destination.add(mapAddressToMachine(localDieAddr(address),
+                                                  MachineType:Directory));
       out_msg.DataBlk := cache_entry.DataBlk;
       out_msg.MessageSize := MessageSizeType:Data;
     }
@@ -391,6 +479,7 @@ machine(MachineType:L1Cache, "AIGCIC NoC L1 Cache")
     peek(responseNetwork_in, ResponseMsg) {
       assert(is_valid(cache_entry));
       cache_entry.DataBlk := in_msg.DataBlk;
+      cache_entry.CrossDie := false;
     }
   }
 
@@ -398,6 +487,7 @@ machine(MachineType:L1Cache, "AIGCIC NoC L1 Cache")
     peek(responseXDNetwork_in, ResponseMsg) {
       assert(is_valid(cache_entry));
       cache_entry.DataBlk := in_msg.DataBlk;
+      cache_entry.CrossDie := true;
     }
   }
 
@@ -430,17 +520,18 @@ machine(MachineType:L1Cache, "AIGCIC NoC L1 Cache")
 
   // TRANSITIONS
 
-  transition({IS, IM, MI}, {Load, Ifetch, Store, Replacement}) {
+  transition({IS, IM, MI}, {Load, Ifetch, Store, Replacement,
+                             Load_XD, Ifetch_XD, Store_XD, Replacement_XD}) {
     z_stall;
   }
 
-  transition(M, Store) {
+  transition(M, {Store, Store_XD}) {
     s_store_hit;
     p_profileHit;
     m_popMandatoryQueue;
   }
 
-  transition(M, {Load, Ifetch}) {
+  transition(M, {Load, Ifetch, Load_XD, Ifetch_XD}) {
     r_load_hit;
     p_profileHit;
     m_popMandatoryQueue;
@@ -454,10 +545,26 @@ machine(MachineType:L1Cache, "AIGCIC NoC L1 Cache")
     m_popMandatoryQueue;
   }
 
+  transition(I, Store_XD, IM) {
+    v_allocateTBE;
+    i_allocateL1CacheBlock;
+    a_issueRequestXD;
+    p_profileMiss;
+    m_popMandatoryQueue;
+  }
+
   transition(I, {Load, Ifetch}, IS) {
     v_allocateTBE;
     i_allocateL1CacheBlock;
     a_issueRequest;
+    p_profileMiss;
+    m_popMandatoryQueue;
+  }
+
+  transition(I, {Load_XD, Ifetch_XD}, IS) {
+    v_allocateTBE;
+    i_allocateL1CacheBlock;
+    a_issueRequestXD;
     p_profileMiss;
     m_popMandatoryQueue;
   }
@@ -497,6 +604,14 @@ machine(MachineType:L1Cache, "AIGCIC NoC L1 Cache")
   transition(M, Replacement,  MI) {
      v_allocateTBE;
      b_issuePUT;
+     x_copyDataFromCacheToTBE;
+     forward_eviction_to_cpu;
+     h_deallocateL1CacheBlock;
+  }
+
+  transition(M, Replacement_XD,  MI) {
+     v_allocateTBE;
+     b_issuePUTXD;
      x_copyDataFromCacheToTBE;
      forward_eviction_to_cpu;
      h_deallocateL1CacheBlock;

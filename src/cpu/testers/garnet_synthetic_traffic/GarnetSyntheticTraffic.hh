@@ -117,6 +117,9 @@ class GarnetSyntheticTraffic : public ClockedObject
 
     unsigned blockSizeBits;
     Addr destShift;
+    uint32_t mpuId;
+    uint32_t gpuId;
+    double crossDieRatio;
 
     Tick noResponseCycles;
 

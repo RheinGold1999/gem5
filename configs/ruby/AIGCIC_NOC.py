@@ -92,6 +92,11 @@ def create_system(
             transitions_per_cycle=options.ports,
             clk_domain=clk_domain,
             ruby_system=ruby_system,
+            # this die's identity: requests whose address carries a
+            # different mpu_id/gpu_id are issued on the cross-die vnets
+            # (vnet1/vnet3)
+            mpu_id=getattr(options, "mpu_id", 0),
+            gpu_id=getattr(options, "gpu_id", 0),
             # one TBE per in-flight miss; must be >= sequencer
             # max_outstanding_requests, else the TBE table overflows
             number_of_TBEs=512,

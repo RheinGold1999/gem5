@@ -168,11 +168,15 @@ def setup_memory_controllers(system, ruby, dir_cntrls, options):
         assert num_cols <= 8 and options.mesh_rows <= 4, \
             "MPU-52 layout: node_x needs 2 bits (rows), node_y 3 bits (cols)"
         window_size = 1 << 32  # 4GiB per node
+        # Windows live at THIS die's identity: [gpu_id | mpu_id | field].
+        local_die = ((getattr(options, "gpu_id", 0) & 0x3ff) << 41) | \
+                    ((getattr(options, "mpu_id", 0) & 0x7) << 37)
         mem_ctrls = []
         for i, dir_cntrl in enumerate(dir_cntrls):
             row, col = divmod(i, num_cols)
             node_field = (col << 2) | row
-            window = AddrRange(node_field << 32, size=window_size)
+            window = AddrRange(local_die | (node_field << 32),
+                               size=window_size)
             mem_ctrl = SimpleMemory(
                 range=window, null=True, latency="1ns", bandwidth="0GiB/s",
                 clk_domain=dir_cntrl.clk_domain,

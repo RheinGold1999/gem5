@@ -22,12 +22,15 @@ Everything outside the network is intentionally ideal or minimal:
 
 ## 2. Frozen design decisions (do not change casually)
 
-* **4 vnets**: vnet0/1 = request internal/cross-die, vnet2/3 = response
-  internal/cross-die. The cross-die path (vnet1/vnet3) is fully wired on
-  both sides (L1 `*XD` buffers, dir `requestToDirXD`/`responseFromDirXD`,
-  per-TBE `CrossDie` flag) but **carries no traffic yet** — it activates
-  when an address map decides internal-vs-cross-die. Mesh traffic
-  currently uses vnet0/vnet2 only.
+* **4 vnets, all active**: vnet0/1 = request internal/cross-die,
+  vnet2/3 = response internal/cross-die. Cross-die traffic is decided by
+  the address: the mesh has its own die identity (`--mpu-id`/`--gpu-id`,
+  default 0), and an address whose `mpu_id` [39:37] or `gpu_id` [50:41]
+  differs is cross-die. The L1 puts those requests on vnet1
+  (`isCrossDie()` in the .sm), they go to the **column-0 node of the
+  source's row** (die-to-die link side), and the dir proxies the remote
+  memory and answers on vnet3. Enable traffic with
+  `--cross-die-ratio=<0..1>` (mpu52 only; legacy fatal-errors).
 * **Deadlock rule**: a vnet may only depend on vnets with index >= its own
   (requests vnet0/1 → responses vnet2/3). Any new message flow must keep
   this ordering.
@@ -69,7 +72,8 @@ Everything outside the network is intentionally ideal or minimal:
 | `configs/example/aigcic_sc_demo.py` | Pattern-A SystemC demo: SC master → `TlmToGem5Bridge` → RubySequencer → NoC |
 | `configs/example/aigcic_noc_synth_traffic.py --addr-layout` | **`mpu52` (default)**: MPU-Die 52-bit layout, per-node 4GiB windows, `SimpleMemory(null=True)` = zero backing, `--lines-per-dest=2^25`. `legacy` = old XOR-interleaved 512MiB space (needed to reproduce `log/aigcic_noc/mesh_4x6/vc*_ideal`); mpu52 reference sweep in `log/aigcic_noc/mpu52_mesh_4x6/` |
 | `README-NOC.md` | user-facing guide + §6 reference results (VC sweep baseline) |
-| `log/aigcic_noc/mesh_4x6/` | result tree; `vc{1..4}_ideal/` is the current baseline dataset |
+| `log/aigcic_noc/mesh_4x6/` | legacy-layout result tree (`vc{1..4}_ideal/` = §6 baseline) |
+| `log/aigcic_noc/mpu52_mesh_4x6/`, `mpu52_crossdie/` | current-default (mpu52) sweeps: VC sweep and cross-die-share sweep |
 
 ## 4. Commands
 
@@ -142,6 +146,26 @@ million.
     PhysMemoryPool — the zero-RAM way to serve huge simulated windows.
   * The analyzer's flit sizing is `ceil(data_msg_size / flit_size)`
     (header NOT counted — matches the modified Network.cc).
+* Cross-die gotchas:
+  * `AddrRange::isSubset` **panics on interleaved ranges**, so a dir
+    window cannot be an interleaved range covering all die ids — keep
+    contiguous 4GiB windows and adjust the *address* instead.
+  * `RubyPort` rejects any request address outside `System::isMemAddr`
+    as a PIO address. Cross-die addresses (foreign die fields) live
+    outside this die's physmem, so the driver declares
+    `system.external_memory_ranges` (`System::isMemAddr` also accepts
+    those) whenever `--cross-die-ratio > 0`.
+  * The dir must NOT forward a cross-die address to its memory port
+    (the port's window only covers this die). It answers from the
+    request queue instead, which also means no TBE is allocated for
+    cross-die accesses (they are stateless on the dir side).
+  * Route cross-die requests with `localDieAddr(addr)` (die fields
+    replaced by this die's identity), not `addr % 2^37`: the windows
+    sit at the local die identity, so masking everything breaks
+    `--mpu-id != 0`.
+  * The tester must stamp the *local* die identity into ordinary
+    addresses, otherwise every request looks cross-die when
+    `--mpu-id != 0`.
 
 ## 6. Reference baseline (do not lose)
 
