@@ -37,6 +37,15 @@ class GarnetSyntheticTraffic(ClockedObject):
     cxx_class = "gem5::GarnetSyntheticTraffic"
 
     block_offset = Param.Int(6, "block offset in bits")
+    dest_shift = Param.UInt64(
+        0,
+        "Bit position of the destination field in the generated address. "
+        "0 (default) = legacy layout: [line_sel | dest | block_offset]. "
+        "A non-zero shift (e.g. 32 for the MPU-52 layout) places the dest "
+        "field at [dest_shift, dest_shift+ceilLog2(num_dest)) and the "
+        "line-select bits inside the destination's local space, right "
+        "above the block offset.",
+    )
     num_dest = Param.Int(1, "Number of Destinations")
     lines_per_dest = Param.Int(
         1,

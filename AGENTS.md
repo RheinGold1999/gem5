@@ -41,6 +41,10 @@ Everything outside the network is intentionally ideal or minimal:
 * **Logical 4x6 mesh on a 4x8 fabric**: `num_dirs` must stay a power of
   two (address-encoding check), so a 4x6 mesh is emulated by masking
   traffic (`--num-active-columns=6 --num-active-rows=4`) on 32 routers.
+* **Address layout**: default `--addr-layout=mpu52` (MPU-Die 52-bit
+  node addressing, per-node 4GiB windows, range-based dir routing,
+  zero-backing memory). The legacy XOR-interleaved layout stays
+  available via `--addr-layout=legacy`.
 * **Sequencer**: `max_outstanding_requests=256` (gem5 default 16), L1
   `number_of_TBEs=512`, dir `number_of_TBEs=16384`. NOTE: the
   outstanding cap is *not* the throughput bottleneck — raising it only
@@ -63,6 +67,7 @@ Everything outside the network is intentionally ideal or minimal:
 | `perf_analysis/analyze_mesh_bw.py` | `stats.txt` → per-router bandwidth/latency report |
 | `extras/aigcic_sc/` | SystemC/TLM demo master IP (`sc_master.hh/cc`, `AigcicScMaster.py`); build with `EXTRAS=extras/aigcic_sc` |
 | `configs/example/aigcic_sc_demo.py` | Pattern-A SystemC demo: SC master → `TlmToGem5Bridge` → RubySequencer → NoC |
+| `configs/example/aigcic_noc_synth_traffic.py --addr-layout` | **`mpu52` (default)**: MPU-Die 52-bit layout, per-node 4GiB windows, `SimpleMemory(null=True)` = zero backing, `--lines-per-dest=2^25`. `legacy` = old XOR-interleaved 512MiB space (needed to reproduce `log/aigcic_noc/mesh_4x6/vc*_ideal`); mpu52 reference sweep in `log/aigcic_noc/mpu52_mesh_4x6/` |
 | `README-NOC.md` | user-facing guide + §6 reference results (VC sweep baseline) |
 | `log/aigcic_noc/mesh_4x6/` | result tree; `vc{1..4}_ideal/` is the current baseline dataset |
 
@@ -123,6 +128,20 @@ million.
     stats-group uniqueness check when sequencers share it).
   * Don't forget `network="garnet"` in `set_defaults` — the generic
     Options default is a simple network, which has no Garnet stats.
+* Address-layout gotchas (mpu52):
+  * The tester's `active()`/traffic patterns operate in **router id**
+    space; the tester converts router→node-field internally
+    (`dest_shift`). Never compare a field value against router-space
+    masks — a field-space `active()` check silently skews the
+    destination geometry (avg hops 3.18 → 3.62, -35% throughput).
+  * `RubyDirectoryMemory` allocates an entry table sized by its
+    addr_ranges; for AIGCIC_NOC (which never touches it) it is pinned
+    to a one-block range in `create_directories`, else a 4GiB window
+    costs 32M pointers per dir.
+  * `SimpleMemory(null=True)` gets NO backing store from the
+    PhysMemoryPool — the zero-RAM way to serve huge simulated windows.
+  * The analyzer's flit sizing is `ceil(data_msg_size / flit_size)`
+    (header NOT counted — matches the modified Network.cc).
 
 ## 6. Reference baseline (do not lose)
 

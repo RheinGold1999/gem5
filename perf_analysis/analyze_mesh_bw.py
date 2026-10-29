@@ -214,15 +214,13 @@ def read_config(path):
                    not) -- the per-link view falls back to the name rule then.
       data_msg_size / control_msg_size / ni_flit_size
                    [system.ruby.network] sizing params. Together they fix the
-                   flit count gem5 actually puts on the wire (Network.cc sets
-                   m_data_msg_size = data_msg_size + control_msg_size; the NI
-                   does num_flits = ceil(size / ni_flit_size), see
-                   NetworkInterface.cc). So:
-                     data pkt flits = ceil((data_msg_size + control_msg_size)
-                                           / ni_flit_size)
+                   flit count gem5 actually puts on the wire (this fork:
+                   Network.cc sets m_data_msg_size = data_msg_size WITHOUT
+                   the header, i.e. burst flits = ceil(payload / flit_size),
+                   see NetworkInterface.cc). So:
+                     data pkt flits = ceil(data_msg_size / ni_flit_size)
                      ctrl pkt flits = ceil(control_msg_size / ni_flit_size)
-                   e.g. the default 64B data -> (64+8)/16 = 5 flits; but with
-                   --data-msg-size=8 -> (8+8)/16 = 1 flit (the 1flit runs).
+                   e.g. 64B or 128B data at 1024-bit links -> 1 flit.
                    None if not found.
 
     Returns a dict with these keys; count keys stay 0 if absent.
@@ -468,7 +466,7 @@ def main():
                          "if omitted. cols is derived from the router count.")
     ap.add_argument("--flits-per-data-pkt", type=int, default=None,
                     help="flits per DATA-vnet packet; auto from config.ini as "
-                         "ceil((data_msg_size+control_msg_size)/ni_flit_size) "
+                         "ceil(data_msg_size/ni_flit_size) "
                          "if omitted (e.g. 1 for the --data-msg-size=8 runs, 5 "
                          "for the default 64B payload).")
     ap.add_argument("--flits-per-ctrl-pkt", type=int, default=None,
@@ -586,11 +584,14 @@ def run_analysis(stats_path, args):
     n_data, n_ctrl = sum(data.values()), sum(ctrl.values())
 
     # --- packet -> flit sizing (auto from config.ini) -----------------------
-    # gem5 puts ceil((data_msg_size+control_msg_size)/ni_flit_size) flits on the
-    # wire for a DATA packet and ceil(control_msg_size/ni_flit_size) for a CTRL
-    # packet (Network.cc + NetworkInterface.cc). Derive both from config.ini so
-    # a --data-msg-size=8 run (1 flit/pkt) and a default 64B run (5 flits/pkt)
-    # are both handled without hand-passing --flits-per-data-pkt.
+    # NOTE (this fork): Network.cc sets m_data_msg_size = data_msg_size
+    # WITHOUT the header, so a DATA packet occupies
+    # ceil(data_msg_size / ni_flit_size) flits and a CTRL packet
+    # ceil(control_msg_size / ni_flit_size) (stock gem5 would add the
+    # header to the data size). Derive both from config.ini so a
+    # --data-msg-size=8 run (1 flit/pkt), a 64B run (1 flit) and a 128B
+    # run (1 flit) are all handled without hand-passing
+    # --flits-per-data-pkt.
     fpp_data = args.flits_per_data_pkt
     fpp_ctrl = args.flits_per_ctrl_pkt
     sizing_src = []
@@ -598,11 +599,11 @@ def run_analysis(stats_path, args):
         d, cm, fs = (cfg["data_msg_size"], cfg["control_msg_size"],
                      cfg["ni_flit_size"])
         if d is not None and cm is not None and fs:
-            auto_data = -(-(d + cm) // fs)      # ceil, integer-only
+            auto_data = -(-d // fs)             # ceil, integer-only
             auto_ctrl = -(-cm // fs)
             if fpp_data is None:
                 fpp_data = auto_data
-                sizing_src.append(f"data={auto_data} flits ceil(({d}+{cm})/{fs})")
+                sizing_src.append(f"data={auto_data} flits ceil({d}/{fs})")
             if fpp_ctrl is None:
                 fpp_ctrl = auto_ctrl
                 sizing_src.append(f"ctrl={auto_ctrl} flits ceil({cm}/{fs})")

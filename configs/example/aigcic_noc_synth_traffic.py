@@ -140,9 +140,25 @@ parser.add_argument(
 )
 
 parser.add_argument(
+    "--addr-layout",
+    choices=["legacy", "mpu52"],
+    default="mpu52",
+    help="Address layout. mpu52 (default): MPU-Die "
+         "52-bit node addressing (see below). legacy: [line_sel | dest | "
+         "offset] "
+         "with XOR-hash channel selection (xor_low_bit). mpu52: MPU-Die "
+         "52-bit layout; the node field [36:32] = (node_y << 2) | node_x "
+         "with node_x = mesh row, node_y = mesh column; each node owns a "
+         "contiguous 4GiB window routed by directory range lookup (no "
+         "XOR); line-select bits sit inside the node's local space right "
+         "above the block offset. Memory is backed by zero-allocation "
+         "stubs, so host RAM does not scale with the 32 x 4GiB space.",
+)
+
+parser.add_argument(
     "--lines-per-dest",
     type=int,
-    default=1024,
+    default=None,
     help="Number of distinct cache lines used per destination.\
                         Spreads traffic over many lines to reduce\
                         same-line conflicts when a real coherence\
@@ -150,7 +166,8 @@ parser.add_argument(
                         one-line-per-destination encoding. Must keep\
                         block_offset(6) + log2(num-dirs) +\
                         log2(lines-per-dest) below Ruby's xor_low_bit\
-                        (default 20).",
+                        (default 20). Default: 1024 (legacy) or 2**25 =\
+                        the full 4GiB node space (mpu52).",
 )
 
 parser.add_argument(
@@ -231,9 +248,11 @@ args = parser.parse_args()
 def check_address_encoding(args):
     """Validate the synthetic-traffic address encoding.
 
-    The tester encodes the destination directory in the address bits right
-    above the block offset, and --lines-per-dest adds random line-select
-    bits above the destination bits:
+    Two layouts are supported (--addr-layout):
+
+    legacy (default): the tester encodes the destination directory in
+    the address bits right above the block offset, and --lines-per-dest
+    adds random line-select bits above the destination bits:
 
         [ ... | line_sel | destination | block offset ]
 
@@ -242,12 +261,17 @@ def check_address_encoding(args):
     silently routed to a different directory than the traffic pattern
     intended (uniform_random still looks uniform, but transpose/neighbor/
     single-dest etc. get distorted and per-destination stats become wrong).
+
+    mpu52: the MPU-Die 52-bit layout. The node field [36:32] is
+    (node_y << 2) | node_x with node_x = mesh row (2 bits) and node_y =
+    mesh column (3 bits); each node owns a contiguous 4GiB window
+    [(field << 32), +4GiB). Line-select bits live inside the node's local
+    space, right above the block offset, so they must stay below bit 32.
+    Directory routing is purely range-based (no XOR hashing).
     """
     block_offset_bits = int(math.log2(args.cacheline_size))
     dest_bits = max(1, math.ceil(math.log2(args.num_dirs)))
     line_bits = math.ceil(math.log2(args.lines_per_dest))
-    addr_bits_used = block_offset_bits + dest_bits + line_bits
-    mem_bits = int(math.log2(toMemorySize(args.mem_size)))
 
     if args.lines_per_dest < 1:
         fatal(
@@ -263,6 +287,36 @@ def check_address_encoding(args):
             "map one-to-one onto directories. Choose a power of two.",
             args.num_dirs,
         )
+
+    if args.addr_layout == "mpu52":
+        addr_bits_used = block_offset_bits + line_bits
+        if addr_bits_used > 32:
+            max_lines = 2 ** (32 - block_offset_bits)
+            fatal(
+                "--lines-per-dest=%d needs line-select bits up to bit %d, "
+                "but the MPU-52 layout keeps them inside the node's local "
+                "4GiB space (bits [%d, 32)). Reduce --lines-per-dest to "
+                "<= %d.",
+                args.lines_per_dest, addr_bits_used, block_offset_bits,
+                max_lines,
+            )
+        if dest_bits > 5:
+            fatal(
+                "--num-dirs=%d does not fit the MPU-52 node field: only "
+                "5 bits are available at [36:32] (node_y 3 bits x node_x "
+                "2 bits = 32 nodes).",
+                args.num_dirs,
+            )
+        if int(math.log2(toMemorySize(args.mem_size))) < 37:
+            fatal(
+                "--mem-size=%s is too small for the MPU-52 layout: the "
+                "address space spans 32 nodes x 4GiB = 128GiB (37 bits).",
+                args.mem_size,
+            )
+        return
+
+    addr_bits_used = block_offset_bits + dest_bits + line_bits
+    mem_bits = int(math.log2(toMemorySize(args.mem_size)))
 
     if args.xor_low_bit > 0 and addr_bits_used > args.xor_low_bit:
         max_lines = 2 ** (args.xor_low_bit - block_offset_bits - dest_bits)
@@ -326,7 +380,29 @@ def check_address_encoding(args):
         )
 
 
+# --- --addr-layout-specific defaults (after parse, before the checks) ---
+if args.addr_layout == "mpu52":
+    # Full per-node 4GiB space: 4GiB / block size lines per destination.
+    if args.lines_per_dest is None:
+        args.lines_per_dest = (4 * 1024 * 1024 * 1024) // args.cacheline_size
+    # The node field replaces the XOR-hash channel selection.
+    if args.xor_low_bit != 0:
+        print("addr-layout=mpu52: forcing --xor-low-bit=0 "
+              "(routing is range-based, no XOR hashing)")
+        args.xor_low_bit = 0
+    # The space spans 32 nodes x 4GiB = 128GiB regardless of --mem-size.
+    if toMemorySize(args.mem_size) < (1 << 37):
+        args.mem_size = "128GiB"
+else:
+    if args.lines_per_dest is None:
+        args.lines_per_dest = 1024
+
+dest_shift = 32 if args.addr_layout == "mpu52" else 0
+print("Address layout: %s (dest field at bit %d, lines_per_dest=%d)"
+      % (args.addr_layout, dest_shift, args.lines_per_dest))
+
 check_address_encoding(args)
+
 
 cpus = [
     GarnetSyntheticTraffic(
@@ -344,12 +420,25 @@ cpus = [
         num_dest=args.num_dirs,
         lines_per_dest=args.lines_per_dest,
         block_offset=int(math.log2(args.cacheline_size)),
+        dest_shift=dest_shift,
     )
     for i in range(args.num_cpus)
 ]
 
 # create the desired simulated system
-system = System(cpu=cpus, mem_ranges=[AddrRange(args.mem_size)])
+if args.addr_layout == "mpu52":
+    # One 4GiB window per node: dir at router (row, col) owns the window
+    # with node field (col << 2) | row (see Ruby.py
+    # setup_memory_controllers). Backed by AigcicNullMemory (no host RAM).
+    num_cols = args.num_cpus // args.mesh_rows
+    mem_ranges = [
+        AddrRange(((col << 2) | row) << 32, size="4GiB")
+        for i in range(args.num_dirs)
+        for row, col in [divmod(i, num_cols)]
+    ]
+    system = System(cpu=cpus, mem_ranges=mem_ranges)
+else:
+    system = System(cpu=cpus, mem_ranges=[AddrRange(args.mem_size)])
 
 
 # Create a top-level voltage domain and clock domain

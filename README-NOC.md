@@ -119,7 +119,8 @@ a **logical 4x6 mesh on a 4x8 fabric**:
 | `--link-width-bits` | 1024 | 128 B flits |
 | `--vcs-per-vnet` | 1 | one VC per vnet |
 | `--inj-vnet` | 0 | inject on vnet0 (request internal-die); only vnet0 has receiving agents |
-| `--xor-low-bit` | 22 | XOR-hash low bit (required for 32 dirs + default `--lines-per-dest=1024` at 128 B lines) |
+| `--addr-layout` | `mpu52` | **MPU-Die 52-bit node addressing** (see §3.6): node field [36:32] = `(col<<2)\|row`, per-node 4 GiB windows, range-based dir routing, `--lines-per-dest` = 2^25, zero-backing `SimpleMemory(null=True)`. Use `--addr-layout=legacy` for the old `[line\|dest\|offset]`+XOR layout (512 MiB interleaved space, `--lines-per-dest=1024`, `--xor-low-bit=22`) |
+| `--xor-low-bit` | 22 (legacy only) | XOR-hash low bit; forced to 0 in mpu52 (range-based routing needs no hashing). Required for 32 dirs + `--lines-per-dest=1024` at 128 B lines in legacy |
 | `--data-msg-size` / `--cacheline_size` | 128 / 128 | data payload = one full flit; the Ruby line size is raised together so `data_msg_size ≤ cacheline_size` holds |
 | `--mem-type` | `SimpleMemory` | **ideal DRAM**: fixed 1-cycle latency, unlimited bandwidth (`configs/ruby/Ruby.py` sets this for `AIGCIC_NOC` builds), so the NoC is the only bottleneck. Override with e.g. `--mem-type=DDR4_1600_8x8` for a real memory system |
 
@@ -202,7 +203,45 @@ Garnet stats/analyzer (`analyze_mesh_bw.py`) work unchanged. Reference
 data: `log/aigcic_sc/demo/` (flit lifetime MEAN ≈ 9.7 cycles at 1 hop,
 1 GHz).
 
-### 3.6 Key parameters
+### 3.6 MPU-52 address layout (--addr-layout=mpu52)
+
+For the MPU-Die node addressing, an alternative layout encodes the node
+in the 52-bit address space instead of the legacy block-interleaved
+channels:
+
+```
+bit:  51    50    41 40   39  37 36  34 33 32  31              7     0
+     |host | gpu_id |glob|mpu_id|node_y|node|   line_sel    | offset |
+      =0    =0      =0    =0   3bits _x 2b  (up to 25 bits)   128B
+```
+
+* `node_x` [33:32] = mesh **row** (2 bits), `node_y` [36:34] = mesh
+  **column** (3 bits); the node field [36:32] = `(col << 2) | row`.
+* Each node owns a contiguous **4 GiB window**
+  `[(field << 32), +4GiB)`; directory routing is purely range-based
+  (`Network::addressToNodeID` resolves the owner dir from the
+  registered ranges — no interleaving, no XOR hashing).
+* `--lines-per-dest` defaults to 2^25 (= 4 GiB / 128 B: the traffic
+  spans the full per-node space). Line-select bits live inside the
+  node's local space right above the block offset.
+* The windows are served by `SimpleMemory(null=True)` — the
+  PhysMemoryPool skips backing-store allocation for null memories, so
+  host RAM does **not** scale with the 32 x 4 GiB space (measured RSS
+  ~= legacy runs).
+* The tester converts its (router-space) destination to the node field
+  internally (`dest_shift` param, default 0 = legacy). `--single-dest-id`
+  stays in **router id** space in both layouts.
+* **mpu52 is the default layout since the 128 B-data switch**; pass
+  `--addr-layout=legacy` to reproduce the section 6 baseline datasets
+  (which were measured with the legacy layout).
+
+Reference mpu52 sweep (same protocol as section 6, 200 k cycles):
+`log/aigcic_noc/mpu52_mesh_4x6/vc{1..4}/` — throughput 0.198 / 0.430 /
+0.515 / 0.530 pkts/cyc/node (VC 1-4), busiest E-link 30% / 65% / 78% /
+80%, network-part MEAN 17.9 / 16.0 / 19.0 / 24.1 cycles — matches the
+legacy baseline within noise.
+
+### 3.7 Key parameters
 
 | Parameter | Meaning |
 |---|---|
@@ -316,13 +355,19 @@ Interpretation hints are printed inline with each section.
 
 ## 6. Reference results: VC sweep on the default configuration
 
-All runs: default config (ideal DRAM, 4x6 active mesh on the 4x8
-fabric, 1024-bit links, 1-flit packets, `max_outstanding_requests=256`),
+All runs: ideal DRAM, 4x6 active mesh on the 4x8 fabric, 1024-bit
+links, 1-flit packets, `max_outstanding_requests=256`,
 `--synthetic=uniform_random --injectionrate=0.99 --sim-cycles=200000000`
-(= 200 000 cycles). Data in `log/aigcic_noc/mesh_4x6/vc{1..4}_ideal/`.
-(Measured with the 64 B-line default before the 128 B switch — packet
-and flit counts are identical: every request and response is 1 flit
-either way; only the address mapping shifts by one bit.)
+(= 200 000 cycles).
+
+* **legacy layout** (now needs `--addr-layout=legacy`; measured before
+  it became non-default, with the then-64 B-line default — packet and
+  flit counts identical to the current 128 B default: every request and
+  response is 1 flit either way):
+  `log/aigcic_noc/mesh_4x6/vc{1..4}_ideal/`.
+* **mpu52 layout** (the current default; measured after the switch):
+  `log/aigcic_noc/mpu52_mesh_4x6/vc{1..4}/` — see section 3.6 for the
+  layout. The two baselines agree within noise.
 
 ### 6.1 Throughput
 

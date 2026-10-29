@@ -80,6 +80,7 @@ GarnetSyntheticTraffic::GarnetSyntheticTraffic(const Params &p)
       retryPkt(NULL),
       size(p.memory_size),
       blockSizeBits(p.block_offset),
+      destShift(p.dest_shift),
       numDestinations(p.num_dest),
       linesPerDest(p.lines_per_dest),
       simCycles(p.sim_cycles),
@@ -264,20 +265,45 @@ GarnetSyntheticTraffic::generatePkt()
 
     // The source of the packets is a cache.
     // The destination of the packets is a directory.
-    // The destination bits are embedded in the address after byte-offset,
-    // matching the directories' block-interleaved address mapping.
-    // With lines_per_dest > 1, random line-select bits are placed right
-    // above the destination bits so that packets to one destination spread
-    // over many cache lines instead of all hitting the same line. These
-    // bits change the line but not the home directory, as long as they
-    // stay below any address-hashing bits of the directory mapping
-    // (e.g. Ruby's xor_low_bit, default 20).
-    Addr paddr = destination;
-    if (linesPerDest > 1) {
-        Addr line_sel = rng->random<unsigned>(0, linesPerDest - 1);
-        paddr |= line_sel << ceilLog2(numDestinations);
+    //
+    // dest_shift == 0 (legacy layout): the destination bits are embedded
+    // in the address right after the byte-offset, matching the
+    // directories' block-interleaved address mapping. With
+    // lines_per_dest > 1, random line-select bits are placed right above
+    // the destination bits so that packets to one destination spread over
+    // many cache lines instead of all hitting the same line. These bits
+    // change the line but not the home directory, as long as they stay
+    // below any address-hashing bits of the directory mapping (e.g.
+    // Ruby's xor_low_bit, default 20).
+    //
+    // dest_shift > 0 (e.g. 32 for the MPU-52 layout): the destination
+    // field sits at [dest_shift, dest_shift + ceilLog2(num_dest)) and the
+    // line-select bits live INSIDE the destination's local address space,
+    // directly above the block offset. The address selects the owning
+    // node's per-node window via range-based directory mapping, so no
+    // XOR hashing is involved.
+    Addr paddr;
+    if (destShift > 0) {
+        // `destination` is a mesh router id (so the active-region mask
+        // and the traffic patterns operate in router space, as in the
+        // legacy layout). Convert it to the MPU-52 node field:
+        //   node_x = mesh row (bits [33:32]), node_y = mesh column
+        //   (bits [36:34])  =>  field = (col << 2) | row.
+        unsigned node_x = destination / numColumns;  // mesh row
+        unsigned node_y = destination % numColumns;  // mesh column
+        paddr = (Addr)((node_y << 2) | node_x) << destShift;
+        if (linesPerDest > 1) {
+            Addr line_sel = rng->random<unsigned>(0, linesPerDest - 1);
+            paddr |= line_sel << blockSizeBits;
+        }
+    } else {
+        paddr = destination;
+        if (linesPerDest > 1) {
+            Addr line_sel = rng->random<unsigned>(0, linesPerDest - 1);
+            paddr |= line_sel << ceilLog2(numDestinations);
+        }
+        paddr <<= blockSizeBits;
     }
-    paddr <<= blockSizeBits;
     unsigned access_size = 1; // Does not affect Ruby simulation
 
     // Modeling different coherence msg types over different msg classes.

@@ -116,6 +116,7 @@ class GarnetSyntheticTraffic : public ClockedObject
     std::map<std::string, TrafficType> trafficStringToEnum;
 
     unsigned blockSizeBits;
+    Addr destShift;
 
     Tick noResponseCycles;
 

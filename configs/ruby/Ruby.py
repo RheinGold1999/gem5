@@ -142,6 +142,47 @@ def setup_memory_controllers(system, ruby, dir_cntrls, options):
 
     ruby.memory_size_bits = 48
 
+    # AIGCIC_NOC MPU-52 layout: each mesh node owns a contiguous 4GiB
+    # window of the 52-bit address space instead of a block-interleaved
+    # channel share:
+    #
+    #   addr[51] is_host, addr[50:41] gpu_id, addr[40] is_global,
+    #   addr[39:37] mpu_id, addr[36:34] node_y, addr[33:32] node_x
+    #
+    # node_x is the mesh row (2 bits, 4 values), node_y the mesh column
+    # (3 bits, 8 values); the 5-bit node field [36:32] is therefore
+    # (col << 2) | row. Directory routing is purely range-based:
+    # dir at router (row, col) owns the window with field value
+    # (col<<2)|row, and Network::addressToNodeID() resolves the owner
+    # from the registered ranges. No interleaving, no XOR hashing.
+    #
+    # The per-node windows are served by SimpleMemory with null=True:
+    # the PhysMemoryPool skips backing-store allocation for null
+    # memories (reads return zeros), so host RAM stays independent of
+    # the simulated 32 x 4GiB space, while the port/timing behavior is
+    # identical to the legacy (interleaved SimpleMemory) config.
+    if (buildEnv["PROTOCOL"] == "AIGCIC_NOC"
+            and getattr(options, "addr_layout", "legacy") == "mpu52"):
+        num_cols = options.num_cpus // options.mesh_rows
+        assert options.num_cpus % options.mesh_rows == 0
+        assert num_cols <= 8 and options.mesh_rows <= 4, \
+            "MPU-52 layout: node_x needs 2 bits (rows), node_y 3 bits (cols)"
+        window_size = 1 << 32  # 4GiB per node
+        mem_ctrls = []
+        for i, dir_cntrl in enumerate(dir_cntrls):
+            row, col = divmod(i, num_cols)
+            node_field = (col << 2) | row
+            window = AddrRange(node_field << 32, size=window_size)
+            mem_ctrl = SimpleMemory(
+                range=window, null=True, latency="1ns", bandwidth="0GiB/s",
+                clk_domain=dir_cntrl.clk_domain,
+            )
+            mem_ctrl.port = dir_cntrl.memory_out_port
+            dir_cntrl.addr_ranges = [window]
+            mem_ctrls.append(mem_ctrl)
+        system.mem_ctrls = mem_ctrls
+        return
+
     index = 0
     mem_ctrls = []
     crossbars = []
@@ -338,9 +379,25 @@ def create_directories(options, bootmem, ruby_system, system):
     for i in range(options.num_dirs):
         dir_cntrl = Directory_Controller()
         dir_cntrl.version = i
-        dir_cntrl.directory = RubyDirectoryMemory(
-            block_size=ruby_system.block_size_bytes
-        )
+        if buildEnv["PROTOCOL"] != "AIGCIC_NOC":
+            dir_cntrl.directory = RubyDirectoryMemory(
+                block_size=ruby_system.block_size_bytes
+            )
+        else:
+            # AIGCIC_NOC dirs are stateless DRAM gateways: the protocol
+            # never touches the DirectoryMemory, but the SLICC-generated
+            # controller declares it as a required param. Give it a
+            # one-block range so its entry table stays trivial -- the
+            # real per-node window is served by AigcicNullMemory, and a
+            # full-size table would scale with the per-node address
+            # window (4GiB / 128B = 32M pointers per dir in the MPU-52
+            # layout) for nothing.
+            dir_cntrl.directory = RubyDirectoryMemory(
+                block_size=ruby_system.block_size_bytes,
+                addr_ranges=[
+                    AddrRange(0, size=ruby_system.block_size_bytes)
+                ],
+            )
         dir_cntrl.ruby_system = ruby_system
         # one TBE per in-flight memory access; the dir aggregates requests
         # from all L1s, so size it generously instead of the 256 default
