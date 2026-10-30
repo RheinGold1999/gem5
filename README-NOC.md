@@ -261,21 +261,7 @@ Enable traffic with `--cross-die-ratio=<0..1>` (requires mpu52):
     --vcs-per-vnet=2 --cross-die-ratio=0.2
 ```
 
-Cross-die reference sweep (VC=2, inj=0.99, 200k cycles,
-`log/aigcic_noc/mpu52_crossdie/xd*`):
-
-| cross-die share | 0 | 10% | 20% | 30% | 50% |
-|---|---|---|---|---|---|
-| packets/cyc/node | 0.430 | 0.444 | **0.456** | 0.337 | 0.218 |
-| busiest E-link | 65.0% | 67.4% | 69.0% | 71.9% | 69.3% |
-| avg hops | 3.18 | 3.23 | 3.29 | 3.01 | 2.65 |
-| vnet1 lifetime (cyc) | - | 27 | 162 | 880 | 1419 |
-| vnet3 lifetime (cyc) | - | 15 | 18 | 14 | 14 |
-
-Reading: up to ~20% cross-die the mesh still absorbs the extra traffic
-(the column-0 funnel is not yet the limiter), beyond that the funnel
-into the die-to-die side saturates and vnet1 latency explodes while the
-return path (vnet3) stays at link latency.
+Results and analysis: section 6.4.
 
 Reference mpu52 sweep (same protocol as section 6, 200 k cycles):
 `log/aigcic_noc/mpu52_mesh_4x6/vc{1..4}/` — throughput 0.198 / 0.430 /
@@ -395,7 +381,7 @@ Interpretation hints are printed inline with each section.
 
 ---
 
-## 6. Reference results: VC sweep on the default configuration
+## 6. Reference results: default configuration
 
 All runs: ideal DRAM, 4x6 active mesh on the 4x8 fabric, 1024-bit
 links, 1-flit packets, `max_outstanding_requests=256`,
@@ -452,3 +438,56 @@ links, 1-flit packets, `max_outstanding_requests=256`,
    **VC=4** when maximum throughput matters; measure pure-NoC latency
    with the network-part stats (or lower `--injectionrate` below ~0.3 so
    the NI queues stay empty).
+
+### 6.4 Cross-die (vnet1/vnet3) sweep
+
+Uses `--cross-die-ratio` (section 3.6) and therefore the mpu52 layout;
+VC=2, inj=0.99, 200 000 cycles, ratio = 0 / 0.1 / 0.2 / 0.3 / 0.5.
+Data in `log/aigcic_noc/mpu52_crossdie/xd{0,0.1,0.2,0.3,0.5}/`.
+
+Every cross-die request enters vnet1 and every cross-die response comes
+back on vnet3, so the injected share is exactly `cross-die-ratio / 2`
+per vnet (measured: 9.99% / 9.99% at `--cross-die-ratio=0.2`).
+
+| cross-die share | 0 | 10% | 20% | 30% | 50% |
+|---|---|---|---|---|---|
+| packets/cyc/node | 0.430 | 0.444 | **0.456** | 0.337 | 0.218 |
+| flit lifetime MEAN (cyc) | 241 | 212 | 191 | 236 | 384 |
+| network part MEAN (cyc) | 16.0 | 16.5 | 19.4 | 23.6 | 26.1 |
+| busiest link | 65% (E) | 67% (E) | 69% (E) | **72% (N, col 0)** | **69% (N, col 0)** |
+| avg hops | 3.18 | 3.23 | 3.29 | 3.01 | 2.65 |
+| vnet1 lifetime (cyc) | - | 27 | 162 | **880** | **1419** |
+| vnet1 network part (cyc) | - | 17.6 | 40.6 | 67.8 | 68.9 |
+| vnet3 lifetime (cyc) | - | 15 | 18 | 14 | 14 |
+
+Cross-die requests all land on the column-0 dirs (routers 0/8/16/24,
+one per row) and never touch the local memory port:
+`requestToMemory == requestToDir` on those dirs, and the XD counts are
+balanced across the four funnel nodes (54.7k each at 20%).
+
+Conclusions:
+
+1. **Throughput peaks at ~20% cross-die (0.456 pkts/cyc/node, +6% over
+   the 0% baseline)**, because a cross-die request travels to column 0
+   instead of a random column: shorter average distance (hops 3.18 →
+   3.29 at 20%, then falling as traffic concentrates) and less mesh
+   load for the same packet count.
+2. **Beyond ~25% the die-to-die funnel saturates**: the busiest link
+   flips from an interior E-link (69%) to the **N link of column 0**
+   (72% at 30%, 69% at 50%) while the rest of the mesh idles (min link
+   3.5% at 50%). This is the single-entry D2D port, not the mesh, being
+   the wall.
+3. **vnet1 latency explodes, vnet3 does not**: at 50% share vnet1
+   lifetime is 1419 cycles (1349 of them NI queueing in front of the
+   funnel) while vnet3 stays at 14 cycles — the return path is never
+   congested, so requests queue at the injection side of the remote
+   die's proxy. In other words, cross-die cost shows up as *request
+   backpressure*, not as added NoC latency on the response path.
+4. **Pure-NoC latency stays in the usual band** (network part 16 → 26
+   cycles across the whole sweep, i.e. the same 14-18 cycle median as
+   the VC sweep) until the funnel is heavily overloaded.
+5. Practical guidance: with one D2D port per die, keep the cross-die
+   share below ~20-25% or give the remote die more funnel ports
+   (routing to a full column instead of a single column) — the current
+   implementation routes to column 0 on purpose, so this sweep measures
+   the D2D-link bottleneck directly.
