@@ -451,43 +451,55 @@ per vnet (measured: 9.99% / 9.99% at `--cross-die-ratio=0.2`).
 
 | cross-die share | 0 | 10% | 20% | 30% | 50% |
 |---|---|---|---|---|---|
-| packets/cyc/node | 0.430 | 0.444 | **0.456** | 0.337 | 0.218 |
-| flit lifetime MEAN (cyc) | 241 | 212 | 191 | 236 | 384 |
-| network part MEAN (cyc) | 16.0 | 16.5 | 19.4 | 23.6 | 26.1 |
-| busiest link | 65% (E) | 67% (E) | 69% (E) | **72% (N, col 0)** | **69% (N, col 0)** |
-| avg hops | 3.18 | 3.23 | 3.29 | 3.01 | 2.65 |
-| vnet1 lifetime (cyc) | - | 27 | 162 | **880** | **1419** |
-| vnet1 network part (cyc) | - | 17.6 | 40.6 | 67.8 | 68.9 |
-| vnet3 lifetime (cyc) | - | 15 | 18 | 14 | 14 |
+| packets/cyc/node | 0.430 | 0.452 | **0.475** | 0.410 | 0.262 |
+| flit lifetime MEAN (cyc) | 241 | 216 | 194 | 210 | 348 |
+| network part MEAN (cyc) | 16.0 | 16.1 | 17.2 | 14.6 | 12.1 |
+| busiest link | 65% (E) | 68% (E/W) | **72% (E/W, cols 2-3)** | 63% (E/W) | 44% (E/W, col 1) |
+| avg hops | 3.18 | 3.10 | 3.02 | 2.95 | 2.81 |
+| vnet1 lifetime (cyc) | - | 23 | 75 | 132 | 183 |
+| vnet3 lifetime (cyc) | - | 14 | 41 | **816** | **1116** |
 
-Cross-die requests all land on the column-0 dirs (routers 0/8/16/24,
-one per row) and never touch the local memory port:
-`requestToMemory == requestToDir` on those dirs, and the XD counts are
-balanced across the four funnel nodes (54.7k each at 20%).
+Cross-die requests land on the column-0 dir of their own row (routers
+0/8/16/24; the per-dir totals stay balanced at ~95k each at 20%) and
+never touch the local memory port: `requestToMemory == requestToDir`
+on those dirs.
 
 Conclusions:
 
-1. **Throughput peaks at ~20% cross-die (0.456 pkts/cyc/node, +6% over
-   the 0% baseline)**, because a cross-die request travels to column 0
-   instead of a random column: shorter average distance (hops 3.18 →
-   3.29 at 20%, then falling as traffic concentrates) and less mesh
-   load for the same packet count.
-2. **Beyond ~25% the die-to-die funnel saturates**: the busiest link
-   flips from an interior E-link (69%) to the **N link of column 0**
-   (72% at 30%, 69% at 50%) while the rest of the mesh idles (min link
-   3.5% at 50%). This is the single-entry D2D port, not the mesh, being
-   the wall.
-3. **vnet1 latency explodes, vnet3 does not**: at 50% share vnet1
-   lifetime is 1419 cycles (1349 of them NI queueing in front of the
-   funnel) while vnet3 stays at 14 cycles — the return path is never
-   congested, so requests queue at the injection side of the remote
-   die's proxy. In other words, cross-die cost shows up as *request
-   backpressure*, not as added NoC latency on the response path.
-4. **Pure-NoC latency stays in the usual band** (network part 16 → 26
-   cycles across the whole sweep, i.e. the same 14-18 cycle median as
-   the VC sweep) until the funnel is heavily overloaded.
-5. Practical guidance: with one D2D port per die, keep the cross-die
-   share below ~20-25% or give the remote die more funnel ports
-   (routing to a full column instead of a single column) — the current
-   implementation routes to column 0 on purpose, so this sweep measures
-   the D2D-link bottleneck directly.
+1. **Throughput peaks at ~20% cross-die (0.475 pkts/cyc/node, +10.5%
+   over the 0% baseline)**: a cross-die request travels to column 0 of
+   its own row instead of a random column, so the average path shortens
+   (hops 3.18 → 3.02 at 20%, monotonically down to 2.81 at 50%) and the
+   mesh carries less flit-distance for the same packet count.
+2. **Beyond ~25% the funnel saturates — and the wall is the row
+   corridors, not the column-0 spine**: both directions of every
+   cross-die exchange (request westbound, response eastbound) traverse
+   the same row links between column 0 and the source column, so the
+   busiest links become the E/W corridors around columns 1-3 (72% at
+   20%), while the column-0 vertical links stay at background level
+   (N/S max 40%).
+3. **At high share the response vnet (vnet3) is what collapses**: at
+   50% share vnet3 lifetime is 1116 cycles (1108 of them NI queueing)
+   while vnet1 stays at 183. The serialization point is the funnel
+   dir's single response injection port, which must emit the whole
+   row's cross-die responses (plus its own local ones); requests inject
+   from six L1s per row and queue far less (vnet1 queueing 165 vs
+   vnet3's 1108). Cross-die cost shows up as *response backpressure* at
+   the remote-die proxy.
+4. **Pure-NoC latency stays in the usual band**: network part MEAN 16 →
+   12 cycles, MEDIAN 13 → 10 across the sweep (the completed-packet mix
+   shifts toward short local flows at saturation). The whole-system
+   degradation is NI/funnel queueing, not link latency.
+5. Practical guidance: with one D2D port per die row, keep the
+   cross-die share below ~20-25%; beyond that the row corridors into
+   column 0 and the proxy's response port saturate. The sweep directly
+   measures that bottleneck (the D2D link itself is still ideal — see
+   the modelling note in section 3.6).
+
+History note: the first version of the sweep (kept in
+`xd*_dstrow/`) ran with the tester accidentally aiming cross-die
+requests at the column-0 node of the *destination's* row, which added
+a vertical detour along column 0 and made the column-0 N links the
+hotspot (peak 0.456 at 20%, vnet1 exploding to 1419 cycles at 50%).
+The tester was fixed to target the source's row (the documented
+behaviour); the numbers above are from the fixed runs.

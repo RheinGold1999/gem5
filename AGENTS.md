@@ -166,6 +166,15 @@ million.
   * The tester must stamp the *local* die identity into ordinary
     addresses, otherwise every request looks cross-die when
     `--mpu-id != 0`.
+  * The tester's XD funnel target must be the column-0 node of the
+    **source's** row (`node_x = id / num_columns`), not of the
+    `destination` — the first implementation used the destination's
+    row, which silently added a vertical detour along column 0 for 3/4
+    of XD requests, made the column-0 N links the fake hotspot and
+    sank throughput (0.456 vs 0.475 at 20% share). Diagnose via the
+    traffic matrix (per-(src,col0-dir) counts uniform => wrong; diagonal
+    own-row-dominant => right) and avg hops. Pre-fix data kept in
+    `log/aigcic_noc/mpu52_crossdie/xd*_dstrow/` for comparison.
 
 ## 6. Reference baseline (do not lose)
 
@@ -176,10 +185,19 @@ range, NI queueing explaining all system-latency differences. Any change
 to defaults (link width, payload, outstanding, DRAM model, mesh) must be
 compared against it, and §6 updated if the baseline moves.
 
+Cross-die sweep baseline (README-NOC.md §6.4, VC=2, ideal D2D/DRAM):
+throughput 0.430/0.452/0.475/0.410/0.262 pkts/cyc/node for cross-die
+share 0/10/20/30/50%, peak at ~20%; bottleneck = the row E/W corridors
+around columns 1-3 plus the funnel dir's single response-injection port
+(vnet3 queueing explodes to ~1100 cycles at 50% while vnet1 stays at
+~180). Pure-NoC latency stays at 10-13 cycle medians throughout.
+
 ## 7. Planned next steps
 
-* Address map deciding internal- vs cross-die at the request side
-  (L1 picks vnet0 vs vnet1; dir TBE `CrossDie` already steers the
-  response vnet) — this activates vnet1/vnet3.
+* Cross-die vnet1/vnet3 activation is DONE (address-based die
+  detection + source-row column-0 funnel). Remaining D2D work: an
+  explicit die-to-die link latency/bandwidth model (currently ideal —
+  one memory-controller latency at the proxy dir; flagged in
+  AIGCIC_NOC-dir.sm).
 * Possibly an exposure of `max_outstanding_requests` as a driver CLI
   option (currently hardcoded 256 in `configs/ruby/AIGCIC_NOC.py`).

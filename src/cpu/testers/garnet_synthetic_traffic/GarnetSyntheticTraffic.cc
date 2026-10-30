@@ -304,8 +304,10 @@ GarnetSyntheticTraffic::generatePkt()
         if (remoteDie) {
             // Cross-die traffic leaves the die through the die-to-die
             // link on mesh column 0: route to the column-0 node in the
-            // same row as the source. The dir agent there proxies the
-            // remote die's memory.
+            // same row as the SOURCE (shortest in-die path to this
+            // die's D2D port; no vertical detour along column 0).
+            // The dir agent there proxies the remote die's memory.
+            node_x = id / numColumns;   // source's mesh row
             node_y = 0;
         }
         paddr = (Addr)((node_y << 2) | node_x) << destShift;
