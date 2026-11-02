@@ -102,6 +102,16 @@ class GarnetSyntheticTraffic(ClockedObject):
         "active_rows=4.",
     )
     traffic_type = Param.String("uniform_random", "Traffic type")
+    traffic_table = Param.String(
+        "",
+        "Path to a traffic-pattern table, required by traffic_type='table'. "
+        "Each line: 'src_id dst_id pir' (whitespace-separated; '#' comments; "
+        "one optional header line is skipped). pir in [0,1] is that "
+        "(src,dst) pair's per-cycle packet injection probability; each "
+        "source's pir sum must not exceed 1. Any inconsistency (out-of-range "
+        "or inactive ids, duplicate pairs, pir sum > 1) is fatal. The table "
+        "fully replaces inj_rate in table mode.",
+    )
     inj_rate = Param.Float(0.1, "Packet injection rate")
     inj_vnet = Param.Int(
         -1,

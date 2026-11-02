@@ -30,6 +30,9 @@
 #define __CPU_GARNET_SYNTHETIC_TRAFFIC_HH__
 
 #include <set>
+#include <string>
+#include <utility>
+#include <vector>
 
 #include "base/random.hh"
 #include "base/statistics.hh"
@@ -52,6 +55,7 @@ enum TrafficType {BIT_COMPLEMENT_ = 0,
                   TORNADO_ = 5,
                   TRANSPOSE_ = 6,
                   UNIFORM_RANDOM_ = 7,
+                  TABLE_ = 8,
                   NUM_TRAFFIC_PATTERNS_};
 
 class Packet;
@@ -139,6 +143,16 @@ class GarnetSyntheticTraffic : public ClockedObject
     double injRate;
     int injVnet;
     int precision;
+
+    // TABLE_ traffic (--synthetic=table --traffic-table=<file>), parsed
+    // and validated in the constructor. Per source id: destinations in
+    // ascending id order with their cumulative PIR thresholds;
+    // tableThresholds[id] (sum of the source's pirs) is that source's
+    // per-cycle injection probability. --injection-rate is ignored in
+    // table mode.
+    std::vector<double> tableThresholds;
+    std::vector<std::vector<std::pair<double, int>>> tableEntries;
+    void initTrafficTable(const std::string &fname);
 
     const Cycles responseLimit;
 

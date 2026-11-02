@@ -69,6 +69,7 @@ parser.add_argument(
     default="uniform_random",
     choices=[
         "uniform_random",
+        "table",
         "tornado",
         "bit_complement",
         "bit_reverse",
@@ -77,6 +78,18 @@ parser.add_argument(
         "shuffle",
         "transpose",
     ],
+)
+
+parser.add_argument(
+    "--traffic-table",
+    default=None,
+    help="Traffic-pattern table for --synthetic=table: each line "
+         "'src_id dst_id pir' (whitespace separated, '#' comments, one "
+         "optional header line). pir in [0,1] is that (src,dst) pair's "
+         "per-cycle packet injection probability; each source's pir sum "
+         "must not exceed 1. In table mode --injectionrate is ignored. "
+         "IDs are router ids and must lie inside the active region when "
+         "--num-active-columns/rows is used.",
 )
 
 parser.add_argument(
@@ -266,6 +279,16 @@ parser.set_defaults(
 
 args = parser.parse_args()
 
+# Table-driven traffic: fail fast on option misuse before anything else
+# is set up (the table itself is parsed and validated by the tester).
+if args.synthetic == "table":
+    if not args.traffic_table:
+        fatal("--synthetic=table requires --traffic-table=<file>.")
+    print("Traffic table mode: --injectionrate is ignored; per-pair PIRs "
+          "govern injection.")
+elif args.traffic_table:
+    fatal("--traffic-table is only valid with --synthetic=table.")
+
 
 def check_address_encoding(args):
     """Validate the synthetic-traffic address encoding.
@@ -445,6 +468,7 @@ cpus = [
         active_columns=args.num_active_columns,
         active_rows=args.num_active_rows,
         inj_rate=args.injectionrate,
+        traffic_table=args.traffic_table or "",
         inj_vnet=args.inj_vnet,
         precision=args.precision,
         num_dest=args.num_dirs,

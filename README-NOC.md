@@ -277,7 +277,8 @@ legacy baseline within noise.
 |---|---|
 | `--num-cpus` / `--num-dirs` | number of L1s / DRAM-controller agents (= mesh routers each); mesh is `num_cpus` routers, `--mesh-rows` rows |
 | `--mesh-rows` | rows of the mesh (columns derived) |
-| `--synthetic` | traffic pattern: `uniform_random` and `neighbor` (the only patterns compatible with active-column masking; `neighbor` sends to a uniformly chosen physically adjacent node E/W/N/S inside the active region -- interior 4, edge 3, corner 2 neighbors), `tornado`, `bit_complement`, `bit_reverse`, `bit_rotation`, `shuffle`, `transpose` |
+| `--synthetic` | traffic pattern: `uniform_random`, `neighbor` and `table` (the only patterns compatible with active-column masking; `neighbor` sends to a uniformly chosen physically adjacent node E/W/N/S inside the active region -- interior 4, edge 3, corner 2 neighbors; `table` follows the user PIR table), `tornado`, `bit_complement`, `bit_reverse`, `bit_rotation`, `shuffle`, `transpose` |
+| `--traffic-table` | traffic-pattern file for `--synthetic=table`: each line `src_id dst_id pir` (whitespace separated, `#` comments, one optional header line). pir in [0,1] is that pair's per-cycle packet injection probability; each source's pir sum must not exceed 1. In table mode `--injectionrate` is ignored. Out-of-range/inactive ids, duplicate pairs and pir sums > 1 are fatal |
 | `--injectionrate` | packets/cycle/node (0..1) |
 | `--sim-cycles` | simulation length in **ticks** (see note above) |
 | `--data-msg-size` (+ `--cacheline_size`) | data payload bytes; flits = `ceil(payload / flit_size)` |
@@ -286,6 +287,61 @@ legacy baseline within noise.
 | `--inj-vnet` | 0 = request internal-die (default), 2 = response internal-die; cross-die vnet1/vnet3 are addressed by the address map (`--cross-die-ratio`), not by this knob |
 | `--switch-arbiter` | `round_robin`, `router_age_based`, `global_age_based` |
 | `--lines-per-dest`, `--xor-low-bit`, `--l1d_size`, `--l1d_assoc` | address-map knobs: spread traffic over many cache lines; the driver validates the address encoding against the XOR-hash bits |
+
+### 3.8 Table-driven traffic (`--synthetic=table`)
+
+`--synthetic=table` reads a user traffic-pattern file
+(`--traffic-table=<file>`, one `src_id dst_id pir` line per flow) and
+injects exactly that: every cycle a source sends one packet with
+probability `sum(pir of its entries)` (the threshold), and the
+destination is drawn from the pairs' cumulative pir. pir is in [0,1]
+and each source's pir sum must stay <= 1. Since flows are unconstrained
+by geometry, arbitrary point-to-point loadings are expressible; nodes
+without table entries never inject, and `--injectionrate` is ignored in
+this mode. Ids are router ids in row-major order
+(`id = mesh_row * numColumns + col`; on the default 4x6-on-4x8 mesh
+`numColumns = 8`, so row 0 = ids 0..5, row 1 = 8..13, ...).
+
+One-to-many: one producer fans out to four consumers, 0.4 pkts/cyc
+total injection (`one2many.tbl`):
+
+```
+# src dst pir
+0 1  0.10
+0 2  0.10
+0 8  0.10
+0 9  0.10
+```
+
+Many-to-one: six producers converge on a single sink -- 0.9 pkts/cyc
+arriving at node 12, a deliberate hotspot; watch the sink dir's
+queueing in the analyzer, same funnel signature as the cross-die dir in
+section 6.4 (`many2one.tbl`):
+
+```
+# src dst pir
+0 12 0.15
+1 12 0.15
+2 12 0.15
+3 12 0.15
+4 12 0.15
+5 12 0.15
+```
+
+Both run as, e.g.:
+
+```bash
+./build/NULL_AIGCIC_NOC/gem5.opt -d log/aigcic_noc/table_many2one \
+    configs/example/aigcic_noc_synth_traffic.py \
+    --synthetic=table --traffic-table=many2one.tbl \
+    --sim-cycles=200000000
+```
+
+All table ids must lie inside the active region when active-column/row
+masking is on (default 4x6); out-of-range or inactive ids, duplicate
+(src,dst) pairs, pir outside [0,1] and pir sums > 1 are fatal at
+startup. Per-packet destinations can be spot-checked with
+`--debug-flags=GarnetSyntheticTraffic`.
 
 Output layout used in this repo:
 

@@ -45,6 +45,10 @@
 #include "sim/stats.hh"
 #include "sim/system.hh"
 
+#include <fstream>
+#include <map>
+#include <sstream>
+
 namespace gem5
 {
 
@@ -111,13 +115,29 @@ GarnetSyntheticTraffic::GarnetSyntheticTraffic(const Params &p)
     }
     traffic = trafficStringToEnum[trafficType];
 
+    // Table-driven traffic: parse and validate --traffic-table up front,
+    // strictly fatal on any inconsistency, so a typo can never silently
+    // distort the experiment.
+    if (traffic == TABLE_) {
+        if (p.traffic_table.empty()) {
+            fatal("%s: traffic_type='table' requires --traffic-table=<file>\n",
+                  name());
+        }
+        initTrafficTable(p.traffic_table);
+    } else if (!p.traffic_table.empty()) {
+        fatal("%s: --traffic-table is only valid with --synthetic=table\n",
+              name());
+    }
+
     // One-time validation: active-column/row masking can only re-draw a
     // uniformly-random destination, so all other patterns are rejected
     // here. NEIGHBOR_ is masking-aware (destinations stay inside the
-    // active region and only active sources inject), so it is allowed
-    // too.
+    // active region and only active sources inject), and TABLE_ is
+    // validated at parse time to reference only active nodes, so both
+    // are allowed too.
     if (activeColumns > 0 || activeRows > 0) {
-        assert(traffic == UNIFORM_RANDOM_ || traffic == NEIGHBOR_);
+        assert(traffic == UNIFORM_RANDOM_ || traffic == NEIGHBOR_ ||
+               traffic == TABLE_);
     }
 
     id = TESTER_NETWORK++;
@@ -169,12 +189,19 @@ GarnetSyntheticTraffic::tick()
     // - generate a random number between 0 and 10^precision
     // - send pkt if this number is < injRate*(10^precision)
     bool sendAllowedThisCycle;
-    double injRange = pow((double) 10, (double) precision);
-    unsigned trySending = rng->random<unsigned>(0, (int) injRange);
-    if (trySending < injRate*injRange)
+    if (traffic == TABLE_) {
+        // The per-pair PIR table fully governs table mode;
+        // --injection-rate is ignored. generatePkt() applies the
+        // per-source threshold (sum of the source's pirs).
         sendAllowedThisCycle = true;
-    else
-        sendAllowedThisCycle = false;
+    } else {
+        double injRange = pow((double) 10, (double) precision);
+        unsigned trySending = rng->random<unsigned>(0, (int) injRange);
+        if (trySending < injRate*injRange)
+            sendAllowedThisCycle = true;
+        else
+            sendAllowedThisCycle = false;
+    }
 
     // always generatePkt unless fixedPkts or singleSender is enabled
     if (sendAllowedThisCycle) {
@@ -217,7 +244,28 @@ GarnetSyntheticTraffic::generatePkt()
             return;
     }
 
-    if (singleDest >= 0)
+    if (traffic == TABLE_) {
+        // Per-source PIR table: with probability tableThresholds[id] a
+        // packet is injected this cycle; the destination is picked from
+        // the cumulative PIR distribution (entry i wins when r falls in
+        // [cum[i-1], cum[i])). singleDest, if set, only overrides the
+        // destination, not the threshold gate.
+        double r = rng->random<double>();
+        if (r >= tableThresholds[id]) {
+            return;
+        }
+        if (singleDest >= 0) {
+            destination = singleDest;
+        } else {
+            destination = tableEntries[id].back().second;
+            for (const auto &entry : tableEntries[id]) {
+                if (r < entry.first) {
+                    destination = entry.second;
+                    break;
+                }
+            }
+        }
+    } else if (singleDest >= 0)
     {
         destination = singleDest;
     } else if (traffic == UNIFORM_RANDOM_) {
@@ -465,6 +513,101 @@ GarnetSyntheticTraffic::initTrafficType()
     trafficStringToEnum["tornado"] = TORNADO_;
     trafficStringToEnum["transpose"] = TRANSPOSE_;
     trafficStringToEnum["uniform_random"] = UNIFORM_RANDOM_;
+    trafficStringToEnum["table"] = TABLE_;
+}
+
+void
+GarnetSyntheticTraffic::initTrafficTable(const std::string &fname)
+{
+    std::ifstream in(fname);
+    if (!in) {
+        fatal("%s: cannot open --traffic-table file '%s'\n", name(), fname);
+    }
+
+    tableThresholds.assign(numDestinations, 0.0);
+    tableEntries.assign(numDestinations, {});
+
+    // First pass: per-source (dst -> pir) maps; catches range, pir-value
+    // and duplicate errors before anything is cumulated.
+    std::vector<std::map<int, double>> raw(numDestinations);
+    size_t num_pairs = 0;
+
+    std::string line;
+    int lineno = 0;
+    bool headerSeen = false;
+    while (std::getline(in, line)) {
+        lineno++;
+        const size_t first = line.find_first_not_of(" \t\r\n");
+        if (first == std::string::npos || line[first] == '#')
+            continue;  // blank or comment line
+
+        std::istringstream iss(line.substr(first));
+        int src, dst;
+        double pir;
+        if (!(iss >> src >> dst >> pir)) {
+            // Tolerate exactly one header line, e.g. "src_id dst_id pir":
+            // a non-numeric line without any digit character (real data
+            // lines always contain digits, so this cannot mask typos).
+            if (!headerSeen &&
+                line.find_first_of("0123456789") == std::string::npos) {
+                headerSeen = true;
+                continue;
+            }
+            fatal("%s: %s:%d: expected 'src_id dst_id pir'\n",
+                  name(), fname, lineno);
+        }
+        std::string extra;
+        if (iss >> extra) {
+            fatal("%s: %s:%d: trailing characters after pir ('%s')\n",
+                  name(), fname, lineno, extra);
+        }
+
+        if (src < 0 || src >= numDestinations)
+            fatal("%s: %s:%d: src_id %d outside [0, %d]\n",
+                  name(), fname, lineno, src, numDestinations - 1);
+        if (dst < 0 || dst >= numDestinations)
+            fatal("%s: %s:%d: dst_id %d outside [0, %d]\n",
+                  name(), fname, lineno, dst, numDestinations - 1);
+        if (pir < 0.0 || pir > 1.0)
+            fatal("%s: %s:%d: pir %g outside [0, 1]\n",
+                  name(), fname, lineno, pir);
+        if ((activeColumns > 0 || activeRows > 0) && !active(src))
+            fatal("%s: %s:%d: src_id %d lies outside the active region\n",
+                  name(), fname, lineno, src);
+        if ((activeColumns > 0 || activeRows > 0) && !active(dst))
+            fatal("%s: %s:%d: dst_id %d lies outside the active region\n",
+                  name(), fname, lineno, dst);
+        if (raw[src].count(dst))
+            fatal("%s: %s:%d: duplicate (src_id=%d, dst_id=%d) pair\n",
+                  name(), fname, lineno, src, dst);
+
+        raw[src][dst] = pir;
+        num_pairs++;
+    }
+
+    if (num_pairs == 0) {
+        fatal("%s: table '%s' contains no (src_id, dst_id, pir) entries\n",
+              name(), fname);
+    }
+
+    // Second pass: per-source cumulative distribution + threshold check
+    // (each source's pir sum is its per-cycle injection probability and
+    // must stay <= 1).
+    for (int s = 0; s < numDestinations; s++) {
+        double cum = 0.0;
+        for (const auto &kv : raw[s]) {
+            cum += kv.second;
+            tableEntries[s].emplace_back(cum, kv.first);
+        }
+        tableThresholds[s] = cum;
+        if (cum > 1.0 + 1e-9) {
+            fatal("%s: source %d PIR sum %g exceeds 1\n", name(), s, cum);
+        }
+    }
+
+    DPRINTF(GarnetSyntheticTraffic,
+            "%s: loaded %d table pairs from %s\n",
+            name(), (int) num_pairs, fname);
 }
 
 bool
