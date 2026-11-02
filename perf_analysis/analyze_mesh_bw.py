@@ -280,7 +280,7 @@ def read_config(path):
             # config.ini, e.g. type=MI_example_Directory_Controller or
             # type=Garnet_standalone_L1Cache_Controller. This decides how many
             # Local ports per router actually carry traffic (see docstring).
-            m = re.match(r"^\s*type=(Garnet_standalone|MI_example)_\w*Controller\b",
+            m = re.match(r"^\s*type=(Garnet_standalone|MI_example|AIGCIC_NOC)_\w*Controller\b",
                          line)
             if m and cfg["protocol"] is None:
                 cfg["protocol"] = m.group(1)
@@ -624,6 +624,17 @@ def run_analysis(stats_path, args):
     if args.active_local_links is not None:
         active_local = args.active_local_links
         active_local_src = "CLI"
+    elif cfg["protocol"] == "AIGCIC_NOC":
+        # AIGCIC_NOC: a REAL request/response protocol (GPU-style L1s + dir
+        # DRAM gateways, no coherence). BOTH Local ports of every router carry
+        # traffic in BOTH directions:
+        #   OUT: the L1 injects requests AND the dir injects responses.
+        #   IN : the dir receives requests AND the L1 receives responses.
+        # Both directions aggregate all controllers of the router, so the
+        # per-router Local OUT/IN grids are the SUM over both links (normalized
+        # by active_local = local_ports = nodes-per-router).
+        active_local = local_ports
+        active_local_src = "AIGCIC_NOC"
     elif cfg["protocol"] == "Garnet_standalone":
         # Garnet_standalone: the dir machine drops every request it receives and
         # never answers, and the only traffic generators are the L1 testers. So
@@ -656,6 +667,10 @@ def run_analysis(stats_path, args):
     elif active_local == 1 and cfg["protocol"] == "Garnet_standalone":
         local_note = ("only the L1 injects and only the Dir receives, so exactly "
                       "one of the two Local ports per direction carries traffic")
+    elif cfg["protocol"] == "AIGCIC_NOC":
+        local_note = ("AIGCIC_NOC is a real request/response protocol: both the "
+                      "L1 and the Dir send and receive, so BOTH Local ports per "
+                      "direction carry traffic (grid = SUM of both links)")
     elif cfg["protocol"] == "MI_example" and active_local == local_ports:
         local_note = ("MI_example is a real protocol: both the L1 and the Dir "
                       "send and receive, so BOTH Local ports per direction "
@@ -697,15 +712,18 @@ def run_analysis(stats_path, args):
         det.append(f"{local_ports} controller(s)/router from "
                   f"{cfg['num_ext_links']} ext links")
     if (args.active_local_links is None and cfg["num_injectors"]
-            and cfg["num_routers"] and cfg["protocol"] == "Garnet_standalone"):
-        det.append(f"{active_local} injector(s)/router (Garnet_standalone)")
+            and cfg["num_routers"] and cfg["protocol"] in
+            ("Garnet_standalone", "AIGCIC_NOC")):
+        tag = " (Garnet_standalone)" if cfg["protocol"] == "Garnet_standalone" \
+            else " (AIGCIC_NOC: L1 testers)"
+        det.append(f"{active_local} injector(s)/router{tag}")
     if args.active_local_links is None and cfg["protocol"] == "MI_example":
         det.append(f"{active_local} active Local port(s)/direction "
                   f"(MI_example: both L1 and Dir send+receive)")
     if det:
         print("  (auto: " + "; ".join(det) + ")")
     print(f"  {local_ports} independent \"Local\" ports per direction "
-          f"(1 flit/cycle each); of those only {active_local} per direction "
+          f"(1 flit/cycle each); of those {active_local} per direction "
           f"actually carry traffic in this traffic model.")
     print(f"  ({local_note}.)")
     print(f"  router outbound capacity = #mesh_dirs + {active_local} (only the "
@@ -768,13 +786,15 @@ def run_analysis(stats_path, args):
     #                dest index is encoded in the address)        -> 1 link
     #     So per-router sum == duty of that router's single active link, and the
     #     grid must be normalized by active_local(=1), not by local_ports.
-    #   MI_example: active_local = local_ports (2 here). Both the L1 and the Dir
-    #     controller send AND receive, so the per-router sum is spread over BOTH
-    #     Local ports per direction and the grid is the AVERAGE duty of those two
-    #     links (normalized by active_local=2). NOTE this is a per-router average:
-    #     the two links are NOT equally loaded (L1 carries the requests+data,
-    #     Dir carries the forwarded snoops+responses), so the true per-link duty
-    #     of each individual Local port differs -- this script reports their mean.
+    #   MI_example / AIGCIC_NOC: active_local = local_ports (2 here). Both the
+    #     L1 and the Dir controller send AND receive, so the per-router sum is
+    #     spread over BOTH Local ports per direction. The grid keeps the per-
+    #     router SUM, expressed as % of ONE link's 1 flit/cycle so the two PER
+    #     LINK tables below add up to it cell by cell. NOTE the two links are
+    #     NOT equally loaded (AIGCIC_NOC: L1 carries requests+data-responses,
+    #     Dir carries requests-in+data-out; MI_example: Dir carries forwards
+    #     +snoops), so the grid alone hides the per-link hotspots -- a grid
+    #     value >100% means the router's combined local port is oversubscribed.
     out_flits, in_flits = defaultdict(int), defaultdict(int)
     for (s, d), pkts in data.items():
         out_flits[s] += pkts * fpp_data
@@ -785,20 +805,25 @@ def run_analysis(stats_path, args):
     # raw flits/cycle per router (used for the router total below)
     lo_fpc = {divmod(i, cols): out_flits[i] / cycles for i in range(rows * cols)}
     li_fpc = {divmod(i, cols): in_flits[i] / cycles for i in range(rows * cols)}
-    # grid = duty of the active local link(s) of that router
-    lo = {k: 100.0 * v / active_local for k, v in lo_fpc.items()}
-    li = {k: 100.0 * v / active_local for k, v in li_fpc.items()}
+    # grid = SUM of the router's active local link(s), expressed as % of ONE
+    # link's capacity (1 flit/cycle), so the cell value is directly addable
+    # from / comparable to the PER LINK tables below. With active_local = 2 a
+    # value >100% means the router's combined local port (2 flit/cycle) is
+    # oversubscribed. (lo_fpc stays raw flits/cycle for the router-capacity
+    # section, which normalizes by #mesh_dirs + active_local itself.)
+    lo = {k: 100.0 * v for k, v in lo_fpc.items()}
+    li = {k: 100.0 * v for k, v in li_fpc.items()}
     lo_what = ("here the L1's" if active_local == 1
-               else f"the average over {active_local} links")
+               else f"the SUM of the router's {active_local} links")
     li_what = ("here the Dir's" if active_local == 1
-               else f"the average over {active_local} links")
+               else f"the SUM of the router's {active_local} links")
     print_grid(f"--- Local OUT (NI -> router) = duty of the injecting link(s) "
                f"({active_local} of {local_ports} ext links per router are used; "
-               f"{lo_what}), % of {active_local} flit/cycle ---",
+               f"{lo_what}), % of 1 flit/cycle (per-link values add up to this) ---",
                lo, a_rows, a_cols)
     print_grid(f"--- Local IN (router -> NI) = duty of the delivering link(s) "
                f"({active_local} of {local_ports} ext links per router are used; "
-               f"{li_what}), % of {active_local} flit/cycle ---",
+               f"{li_what}), % of 1 flit/cycle (per-link values add up to this) ---",
                li, a_rows, a_cols)
     est_ext_out, est_ext_in = sum(out_flits.values()), sum(in_flits.values())
     n_active_routers = a_rows * a_cols
@@ -808,9 +833,9 @@ def run_analysis(stats_path, args):
           f"| est ext-in {est_ext_in} vs measured {totals.get('ext_in_link_utilization')}")
     print(f"  local side: {n_act_links} ACTIVE ext links x {cycles} cycles = "
           f"{n_act_links * cycles} flit capacity -> "
-          f"{100.0 * est_ext_out / (n_act_links * cycles):.2f}% avg duty on the "
-          f"injecting link(s), {100.0 * est_ext_in / (n_act_links * cycles):.2f}% "
-          f"on the delivering link(s)")
+          f"{100.0 * est_ext_out / (n_act_links * cycles):.2f}% avg duty PER "
+          f"individual link ({100.0 * est_ext_out / (n_act_links * cycles) * active_local:.2f}% "
+          f"of the router's combined local port), same for delivering")
     print(f"  (the other {n_ext_links - n_act_links} ext links sit idle: "
           f"{100.0 * est_ext_out / (n_ext_links * cycles):.2f}% if you insist on "
           f"dividing by all {n_ext_links})\n")
@@ -833,7 +858,9 @@ def run_analysis(stats_path, args):
     # injects -- so the Dir-OUT and L1-IN links are structurally EMPTY. They are
     # still printed (as 0.00%) so it is explicit that those directions carry no
     # traffic. MI_example loads all four.
-    linkrx = re.compile(r"^(\w+?)(From|To)(Cache|Dir|Dma)$")
+    # (XD suffix = the cross-die twin buffer of the same port, e.g.
+    #  requestFromCacheXD; same direction, same flit sizing as its base name)
+    linkrx = re.compile(r"^(\w+?)(From|To)(Cache|Dir|Dma)(XD)?$")
     buf_dir = cfg.get("buf_dir") or {}
     # per (controller, direction) -> flits
     link_flits = defaultdict(int)
@@ -907,7 +934,7 @@ def run_analysis(stats_path, args):
                      f"L1 and the Dir send)")
     cap_note = (f"#mesh_dirs + {active_local} local "
                 f"(corner {2 + active_local} / edge {3 + active_local} / "
-                f"interior {4 + active_local} flit/cycle; {cap_extra}")
+                f"interior {4 + active_local} flit/cycle; {cap_extra})")
     print(f"Router total outbound (N+S+E+W+local-out), capacity = {cap_note}:")
     rsum, rcap = {}, {}
     for r in range(a_rows):
@@ -966,9 +993,13 @@ def run_analysis(stats_path, args):
             print("        (Garnet_standalone) the two directions use two DIFFERENT")
             print("        ext links: OUT = the L1's, IN = the Dir's.")
         else:
-            print(f"        (MI_example) each direction spreads over {active_local} "
-                  f"Local links")
-            print("        (the L1's and the Dir's); the grid is their average duty.")
+            print(f"        (both links active) the grid is the SUM of the router's "
+                  f"{active_local} Local links")
+            print("        per direction, in % of ONE link (so >100% = combined "
+                  "local port")
+            print("        oversubscribed); per-link duty is in the 'Local OUT/IN "
+                  "PER LINK'")
+            print("        tables above.")
         print("        Low OUT + normal IN at a router = injection-starved net")
         print("        sink (its traffic can't clear the congested core), NOT a")
         print("        backpressured output. High contention ratio = the router")

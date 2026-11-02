@@ -43,16 +43,18 @@ L1 (Sequencer + CacheMemory)  ---NoC (Garnet)---  DRAM Controller (agent) --- DR
 | vnet | purpose | messages |
 |---|---|---|
 | vnet0 | request, internal-die | GETX (1 flit), PUTX (data) |
-| vnet1 | request, cross-die | path in place (buffers wired, idle until the address map routes cross-die traffic) |
+| vnet1 | request, cross-die | GETX (1 flit) — active when the address carries a foreign die id |
 | vnet2 | response, internal-die | DATA (data), WB_ACK (1 flit) |
-| vnet3 | response, cross-die | path in place (buffers wired, idle) |
+| vnet3 | response, cross-die | DATA — active for cross-die responses |
 
-Mesh traffic currently always uses vnet0/vnet2 (internal die). The
-cross-die path (vnet1/vnet3) is fully wired on both sides — L1 has
-`requestFromCacheXD`/`responseToCacheXD`, the DRAM-controller agent has
-`requestToDirXD`/`responseFromDirXD` and a per-TBE `CrossDie` flag that
-steers the response vnet — it only needs the address-map decision to be
-activated.
+With the default mpu52 address layout the cross-die path (vnet1/vnet3) is
+**active**: the die identity is encoded in the address (`mpu_id` [39:37] /
+`gpu_id` [50:41]), so the L1 routes any foreign-die address through
+`requestFromCacheXD` (vnet1) and gets the response on `responseToCacheXD`
+(vnet3); the dir side mirrors it with `requestToDirXD`/`responseFromDirXD`
+and a per-TBE `CrossDie` flag that steers the response vnet. Traffic is
+enabled with `--cross-die-ratio=<0..1>` (default 0 = pure internal, i.e.
+vnet0/vnet2 only; results in section 6.4).
 
 ### 1.3 Flit sizing
 
@@ -281,7 +283,7 @@ legacy baseline within noise.
 | `--data-msg-size` (+ `--cacheline_size`) | data payload bytes; flits = `ceil(payload / flit_size)` |
 | `--link-width-bits` | flit size in bits (default 1024) |
 | `--num-active-columns` / `--num-active-rows` | restrict traffic to the top-left `rows x cols` sub-mesh; 0 = full fabric |
-| `--inj-vnet` | 0 = request internal-die (default), 2 = response internal-die; 1/3 cross-die reserved |
+| `--inj-vnet` | 0 = request internal-die (default), 2 = response internal-die; cross-die vnet1/vnet3 are addressed by the address map (`--cross-die-ratio`), not by this knob |
 | `--switch-arbiter` | `round_robin`, `router_age_based`, `global_age_based` |
 | `--lines-per-dest`, `--xor-low-bit`, `--l1d_size`, `--l1d_assoc` | address-map knobs: spread traffic over many cache lines; the driver validates the address encoding against the XOR-hash bits |
 

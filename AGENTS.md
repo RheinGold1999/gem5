@@ -146,6 +146,17 @@ million.
     PhysMemoryPool — the zero-RAM way to serve huge simulated windows.
   * The analyzer's flit sizing is `ceil(data_msg_size / flit_size)`
     (header NOT counted — matches the modified Network.cc).
+  * The analyzer's per-link Local view must accept the `XD` buffer
+    suffix (`requestFromCacheXD` etc.): the old regex silently dropped
+    all cross-die buffers (per-link IN total came out as exactly half
+    of `ext_in_link_utilization` at 50% cross-die share).
+  * The per-router Local OUT/IN grids aggregate ALL controllers of a
+    router (SUM of both Local links), expressed as % of ONE link's
+    1 flit/cycle so the PER LINK tables add up to them cell by cell.
+    A grid value >100% = the router's combined local port (2 flit/cycle)
+    is oversubscribed. For AIGCIC_NOC both the L1 and the Dir inject
+    and both receive; the old "(Garnet_standalone) IN = the Dir's"
+    note only holds for the synthetic-only protocol.
 * Cross-die gotchas:
   * `AddrRange::isSubset` **panics on interleaved ranges**, so a dir
     window cannot be an interleaved range covering all die ids — keep
