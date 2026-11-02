@@ -112,9 +112,12 @@ GarnetSyntheticTraffic::GarnetSyntheticTraffic(const Params &p)
     traffic = trafficStringToEnum[trafficType];
 
     // One-time validation: active-column/row masking can only re-draw a
-    // uniformly-random destination, so all other patterns are rejected here.
+    // uniformly-random destination, so all other patterns are rejected
+    // here. NEIGHBOR_ is masking-aware (destinations stay inside the
+    // active region and only active sources inject), so it is allowed
+    // too.
     if (activeColumns > 0 || activeRows > 0) {
-        assert(traffic == UNIFORM_RANDOM_);
+        assert(traffic == UNIFORM_RANDOM_ || traffic == NEIGHBOR_);
     }
 
     id = TESTER_NETWORK++;
@@ -245,9 +248,40 @@ GarnetSyntheticTraffic::generatePkt()
         else // (source%2 == 1)
             destination = ((source/2) + (num_destinations/2));
     } else if (traffic == NEIGHBOR_) {
-            dest_x = (src_x + 1) % radix;
-            dest_y = src_y;
-            destination = dest_y*radix + dest_x;
+        // Neighbor traffic on the physical mesh, not on the square radix
+        // grid. radix = sqrt(num_destinations) assumes a square mesh and
+        // breaks on non-square fabrics (e.g. 32 routers = 4 rows x 8
+        // columns, where radix=5 distorts the geometry and can even
+        // overflow the destination: id=31 -> dest=32). Strict
+        // nearest-neighbor semantics: every node injects at the full
+        // rate, each packet going to one uniformly chosen physically
+        // adjacent node (E/W/N/S) that exists inside the active region
+        // (the active sub-mesh when masking is on, the fabric
+        // otherwise). Interior nodes choose among 4 neighbors, edge
+        // nodes among 3, corner nodes among 2 -- no torus wrap, and no
+        // node is silenced for sitting on an edge. All inactive sources
+        // are already blocked by the active() check above.
+        const int src_x = id % numColumns;
+        const int src_y = id / numColumns;
+        const int max_x = (activeColumns > 0) ? activeColumns - 1
+                                              : numColumns - 1;
+        const int max_y = (activeRows > 0)
+            ? activeRows - 1 : (numDestinations / numColumns) - 1;
+        int neighbors[4];
+        int num_neighbors = 0;
+        if (src_x < max_x)  // east
+            neighbors[num_neighbors++] = src_y * numColumns + src_x + 1;
+        if (src_x > 0)      // west
+            neighbors[num_neighbors++] = src_y * numColumns + src_x - 1;
+        if (src_y < max_y)  // south (next row)
+            neighbors[num_neighbors++] = (src_y + 1) * numColumns + src_x;
+        if (src_y > 0)      // north (previous row)
+            neighbors[num_neighbors++] = (src_y - 1) * numColumns + src_x;
+        if (num_neighbors == 0) {   // degenerate 1x1 active region
+            return;
+        }
+        destination = neighbors[rng->random<unsigned>(0,
+                                                      num_neighbors - 1)];
     } else if (traffic == SHUFFLE_) {
         if (source < num_destinations/2)
             destination = source*2;

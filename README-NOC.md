@@ -277,7 +277,7 @@ legacy baseline within noise.
 |---|---|
 | `--num-cpus` / `--num-dirs` | number of L1s / DRAM-controller agents (= mesh routers each); mesh is `num_cpus` routers, `--mesh-rows` rows |
 | `--mesh-rows` | rows of the mesh (columns derived) |
-| `--synthetic` | traffic pattern: `uniform_random` (the only pattern compatible with active-column masking), `tornado`, `bit_complement`, `bit_reverse`, `bit_rotation`, `neighbor`, `shuffle`, `transpose` |
+| `--synthetic` | traffic pattern: `uniform_random` and `neighbor` (the only patterns compatible with active-column masking; `neighbor` sends to a uniformly chosen physically adjacent node E/W/N/S inside the active region -- interior 4, edge 3, corner 2 neighbors), `tornado`, `bit_complement`, `bit_reverse`, `bit_rotation`, `shuffle`, `transpose` |
 | `--injectionrate` | packets/cycle/node (0..1) |
 | `--sim-cycles` | simulation length in **ticks** (see note above) |
 | `--data-msg-size` (+ `--cacheline_size`) | data payload bytes; flits = `ceil(payload / flit_size)` |
