@@ -279,6 +279,7 @@ legacy baseline within noise.
 | `--mesh-rows` | rows of the mesh (columns derived) |
 | `--synthetic` | traffic pattern: `uniform_random`, `neighbor` and `table` (the only patterns compatible with active-column masking; `neighbor` sends to a uniformly chosen physically adjacent node E/W/N/S inside the active region -- interior 4, edge 3, corner 2 neighbors; `table` follows the user PIR table), `tornado`, `bit_complement`, `bit_reverse`, `bit_rotation`, `shuffle`, `transpose` |
 | `--traffic-table` | traffic-pattern file for `--synthetic=table`: each line `src_id dst_id pir` (whitespace separated, `#` comments, one optional header line). pir in [0,1] is that pair's per-cycle packet injection probability; each source's pir sum must not exceed 1. In table mode `--injectionrate` is ignored. Out-of-range/inactive ids, duplicate pairs and pir sums > 1 are fatal |
+| `--table-scale` | table mode only: multiply every pir of the traffic table by this factor (the table-mode equivalent of sweeping `--injectionrate`). The scaled table is validated (`pir <= 1`, per-source pir sum `<= 1`, fatal otherwise) and archived as `<outdir>/traffic_table_scaled.tbl`. Default 1.0. Ready-made AI-workload tables: `traffic_tables/ai/` (section 3.9) |
 | `--traffic-read-ratio` | probability that a generated access is a **read** (non-table modes; table mode uses the per-flow `rw` column). Both types cost 2 msgs/access: R = GETX + Data (clean line dropped silently on replacement), W = fire-and-forget PUTX + WB_ACK (the PUTX carries the write; no fetch, no cached line) |
 | `--injectionrate` | packets/cycle/node (0..1) |
 | `--sim-cycles` | simulation length in **ticks** (see note above) |
@@ -347,11 +348,30 @@ Both run as, e.g.:
     --sim-cycles=200000000
 ```
 
+To sweep the offered load of a table (table mode ignores
+`--injectionrate`), pass `--table-scale=<k>`: every pir is multiplied by
+k, the result is validated (fatal if any pir or per-source pir sum would
+exceed 1) and archived as `<outdir>/traffic_table_scaled.tbl`.
+
 All table ids must lie inside the active region when active-column/row
 masking is on (default 4x6); out-of-range or inactive ids, duplicate
 (src,dst) pairs, pir outside [0,1] and pir sums > 1 are fatal at
 startup. Per-packet destinations can be spot-checked with
 `--debug-flags=GarnetSyntheticTraffic`.
+
+### 3.9 Ready-made AI-workload tables (`traffic_tables/ai/`)
+
+`traffic_tables/ai/` holds traffic tables distilled from published AI
+systems' communication patterns (Baidu/NCCL ring all-reduce, Megatron-LM
+tensor/pipeline parallelism, LLaMA 3 4D parallelism, Switch Transformer /
+GShard / DLRM all-to-all, DeepSeek-V3-style hot experts, Mooncake-style
+prefill-decode KV transfer), each documented with its real-system anchor
+in `traffic_tables/ai/README.md` and regenerable via
+`gen_ai_traffic_tables.py`. Reference runs (VC=2, 200k cycles, saturated
+nominal load) live in `log/aigcic_noc/ai_workloads/<scenario>/`.
+Note that one table packet is one synthetic memory access; reads cost
+GETX + Data and writes cost fire-and-forget PUTX + WB_ACK — exactly
+2 msgs/access either way (see section 3.8).
 
 Output layout used in this repo:
 

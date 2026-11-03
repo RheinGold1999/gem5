@@ -111,6 +111,18 @@ parser.add_argument(
 )
 
 parser.add_argument(
+    "--table-scale",
+    type=float,
+    default=1.0,
+    help="Multiply every pir of --traffic-table by this factor (table "
+         "mode only). This is the table-mode equivalent of sweeping "
+         "--injectionrate: the scaled table is validated (pir <= 1 and "
+         "per-source pir sum <= 1, fatal otherwise) and written to "
+         "<outdir>/traffic_table_scaled.tbl so the simulated pattern is "
+         "kept with the results. Default 1.0 (table used as-is).",
+)
+
+parser.add_argument(
     "-i",
     "--injectionrate",
     type=float,
@@ -311,6 +323,78 @@ if not 0.0 <= args.traffic_read_ratio <= 1.0:
     fatal("--traffic-read-ratio %g outside [0, 1]."
           % args.traffic_read_ratio)
 
+if args.synthetic == "table" and args.table_scale != 1.0:
+    # Scale every pir of the user table (table-mode load sweep). The
+    # scaled table is validated up front (clear message before the system
+    # is built) and written into the outdir so the actually-simulated
+    # pattern is archived with the results; the C++ tester re-validates
+    # it anyway (active ids, duplicates, rw tokens, ...).
+    if args.table_scale <= 0.0:
+        fatal("--table-scale must be > 0.")
+    scaled_rows, src_sums = [], {}
+    with open(args.traffic_table) as tf:
+        for lineno, raw in enumerate(tf, 1):
+            line = raw.strip()
+            if not line or line.startswith("#"):
+                continue
+            fields = line.split()
+            if len(fields) in (3, 4):
+                try:
+                    src, dst = int(fields[0]), int(fields[1])
+                    if len(fields) == 4:
+                        # New format 'src dst rw pir': the 3rd column is
+                        # the transaction type, pir comes 4th.
+                        rw = fields[2].upper()
+                        if rw not in ("R", "W"):
+                            fatal("--table-scale: %s:%d: transaction type "
+                                  "must be R or W (got '%s')"
+                                  % (args.traffic_table, lineno, fields[2]))
+                        pir = float(fields[3])
+                    else:
+                        # Legacy 3-column 'src dst pir' means W.
+                        pir = float(fields[2])
+                        rw = "W"
+                except ValueError:
+                    src = None
+                else:
+                    scaled_rows.append((src, dst, pir * args.table_scale,
+                                        rw))
+                    src_sums[src] = src_sums.get(src, 0.0) + \
+                        pir * args.table_scale
+                    continue
+            # Tolerate one non-numeric header line (mirrors the tester).
+            if not scaled_rows and not any(c.isdigit() for c in line):
+                continue
+            fatal("--table-scale: %s:%d: expected "
+                  "'src_id dst_id [R|W] pir' (or legacy "
+                  "'src_id dst_id pir')" % (args.traffic_table, lineno))
+    if not scaled_rows:
+        fatal("--table-scale: table '%s' has no (src, dst, pir) entries."
+              % args.traffic_table)
+    for src, dst, pir, _rw in scaled_rows:
+        if pir > 1.0:
+            fatal("--table-scale: pair (%d,%d) pir %.6f exceeds 1 after "
+                  "scaling by %g." % (src, dst, pir, args.table_scale))
+    worst_src = max(src_sums, key=src_sums.get)
+    if src_sums[worst_src] > 1.0 + 1e-9:
+        fatal("--table-scale: source %d pir sum %.6f exceeds 1 after "
+              "scaling by %g; lower --table-scale."
+              % (worst_src, src_sums[worst_src], args.table_scale))
+    scaled_path = os.path.join(m5.options.outdir,
+                               "traffic_table_scaled.tbl")
+    with open(scaled_path, "w") as sf:
+        sf.write("# scaled from %s by --table-scale=%g\n"
+                 % (args.traffic_table, args.table_scale))
+        sf.write("# src dst rw pir\n")
+        for src, dst, pir, rw in scaled_rows:
+            sf.write("%d %d %s %.6f\n" % (src, dst, rw, pir))
+    print("Traffic table scaled by %g: %d pairs, max source pir sum "
+          "%.4f (source %d); simulated table: %s"
+          % (args.table_scale, len(scaled_rows), src_sums[worst_src],
+             worst_src, scaled_path))
+    args.traffic_table = scaled_path
+
+
 def check_address_encoding(args):
     """Validate the synthetic-traffic address encoding.
 
@@ -445,6 +529,7 @@ def check_address_encoding(args):
             working_set // 1024,
         )
 
+
 if args.cross_die_ratio > 0 and args.addr_layout != "mpu52":
     fatal(
         "--cross-die-ratio requires --addr-layout=mpu52: the legacy "
@@ -475,6 +560,7 @@ print("Address layout: %s (dest field at bit %d, lines_per_dest=%d)"
       % (args.addr_layout, dest_shift, args.lines_per_dest))
 
 check_address_encoding(args)
+
 
 cpus = [
     GarnetSyntheticTraffic(
@@ -526,6 +612,7 @@ if args.addr_layout == "mpu52":
         system.external_memory_ranges = [AddrRange(0, size=1 << 51)]
 else:
     system = System(cpu=cpus, mem_ranges=[AddrRange(args.mem_size)])
+
 
 # Create a top-level voltage domain and clock domain
 system.voltage_domain = VoltageDomain(voltage=args.sys_voltage)

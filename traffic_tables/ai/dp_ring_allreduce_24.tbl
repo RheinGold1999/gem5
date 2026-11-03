@@ -1,0 +1,30 @@
+# dp_ring_allreduce_24.tbl
+# DP ring all-reduce, single global ring of 24 nodes (snake order).
+# Anchor: Baidu ring all-reduce / NCCL ring; data-parallel SGD.
+# Per-pair PIR = 0.30 pkts/cyc (1 gradient chunk per step).
+# rw column (3rd): R = read (fetch-only, GETX+Data); W = write (fire-and-forget, PUTX+WB_ACK)
+# src dst rw pir
+0 1 W 0.300000
+1 2 W 0.300000
+2 3 W 0.300000
+3 4 W 0.300000
+4 5 W 0.300000
+5 13 W 0.300000
+13 12 W 0.300000
+12 11 W 0.300000
+11 10 W 0.300000
+10 9 W 0.300000
+9 8 W 0.300000
+8 16 W 0.300000
+16 17 W 0.300000
+17 18 W 0.300000
+18 19 W 0.300000
+19 20 W 0.300000
+20 21 W 0.300000
+21 29 W 0.300000
+29 28 W 0.300000
+28 27 W 0.300000
+27 26 W 0.300000
+26 25 W 0.300000
+25 24 W 0.300000
+24 0 W 0.300000

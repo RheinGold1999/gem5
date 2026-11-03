@@ -80,6 +80,7 @@ Everything outside the network is intentionally ideal or minimal:
 | `src/mem/ruby/network/garnet/` | instrumented stats (router residence, flit lifetime, network-part quantiles) |
 | `src/mem/ruby/network/Network.cc` | flit-sizing rule (see above) |
 | `perf_analysis/analyze_mesh_bw.py` | `stats.txt` → per-router bandwidth/latency report |
+| `traffic_tables/ai/` | AI-workload traffic tables (ring/TP/PP all-reduce, MoE all-to-all, LLaMA-3 4D composite, prefill-decode KV transfer) for `--synthetic=table`; generator + scenario docs (`README.md`, 中文); reference runs in `log/aigcic_noc/ai_workloads/` |
 | `extras/aigcic_sc/` | SystemC/TLM demo master IP (`sc_master.hh/cc`, `AigcicScMaster.py`); build with `EXTRAS=extras/aigcic_sc` |
 | `configs/example/aigcic_sc_demo.py` | Pattern-A SystemC demo: SC master → `TlmToGem5Bridge` → RubySequencer → NoC |
 | `configs/example/aigcic_noc_synth_traffic.py --addr-layout` | **`mpu52` (default)**: MPU-Die 52-bit layout, per-node 4GiB windows, `SimpleMemory(null=True)` = zero backing, `--lines-per-dest=2^25`. `legacy` = old XOR-interleaved 512MiB space (needed to reproduce `log/aigcic_noc/mesh_4x6/vc*_ideal`); mpu52 reference sweep in `log/aigcic_noc/mpu52_mesh_4x6/` |

@@ -1,0 +1,42 @@
+# pp4_1f1b_pipeline.tbl
+# PP=4 pipeline (stage = mesh row) x DP=6 (column = replica), 1F1B.
+# Anchor: Megatron-LM 1F1B / PipeDream-Flush; fwd act 0.20, bwd grad 0.20 pkts/cyc.
+# Pure vertical column traffic; horizontal links idle.
+# rw column (3rd): R = read (fetch-only, GETX+Data); W = write (fire-and-forget, PUTX+WB_ACK)
+# src dst rw pir
+0 8 W 0.200000
+8 0 W 0.200000
+8 16 W 0.200000
+16 8 W 0.200000
+16 24 W 0.200000
+24 16 W 0.200000
+1 9 W 0.200000
+9 1 W 0.200000
+9 17 W 0.200000
+17 9 W 0.200000
+17 25 W 0.200000
+25 17 W 0.200000
+2 10 W 0.200000
+10 2 W 0.200000
+10 18 W 0.200000
+18 10 W 0.200000
+18 26 W 0.200000
+26 18 W 0.200000
+3 11 W 0.200000
+11 3 W 0.200000
+11 19 W 0.200000
+19 11 W 0.200000
+19 27 W 0.200000
+27 19 W 0.200000
+4 12 W 0.200000
+12 4 W 0.200000
+12 20 W 0.200000
+20 12 W 0.200000
+20 28 W 0.200000
+28 20 W 0.200000
+5 13 W 0.200000
+13 5 W 0.200000
+13 21 W 0.200000
+21 13 W 0.200000
+21 29 W 0.200000
+29 21 W 0.200000
