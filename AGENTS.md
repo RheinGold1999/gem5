@@ -54,6 +54,18 @@ Everything outside the network is intentionally ideal or minimal:
   deepens NI queues (same throughput, worse latency). With ideal DRAM
   and ≥2 VCs the NoC itself is the wall; with real DRAM it is the DRAM
   bus (~81% R+W).
+* **Read/write split** (AIGCIC_NOC L1): reads fetch (GETX + Data) into a
+  clean state `S`, dropped silently on replacement; writes are
+  **fire-and-forget write-no-allocate** — the PUTX itself carries the
+  write (no GETX fetch, no cache line) and the dir's WB_ACK completes
+  the store. Both types cost exactly 2 msgs/access. Non-table modes
+  draw R/W with `--traffic-read-ratio` (default 0.5); table mode takes
+  the per-flow type from the table's 3rd `rw` column (format `src dst
+  rw pir`; a legacy 3-column line `src dst pir` means W). The retired
+  `--inj-vnet` no longer selects request types. The ready-made AI
+  tables are all `W`; the `log/aigcic_noc/ai_workloads/` baselines were
+  re-taken under these semantics (writes used to be fetch-on-write,
+  4 msgs/access — older baselines are historical).
 * The legacy `garnet_synth_traffic.py` stays untouched; AIGCIC_NOC has
   its own driver (see below).
 

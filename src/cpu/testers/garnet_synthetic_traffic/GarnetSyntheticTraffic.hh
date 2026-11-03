@@ -44,6 +44,8 @@
 #include "sim/sim_object.hh"
 #include "sim/stats.hh"
 
+#include <tuple>
+
 namespace gem5
 {
 
@@ -141,17 +143,20 @@ class GarnetSyntheticTraffic : public ClockedObject
     std::string trafficType; // string
     TrafficType traffic; // enum from string
     double injRate;
+    double trafficReadRatio;
     int injVnet;
     int precision;
 
     // TABLE_ traffic (--synthetic=table --traffic-table=<file>), parsed
     // and validated in the constructor. Per source id: destinations in
-    // ascending id order with their cumulative PIR thresholds;
+    // ascending id order with their cumulative PIR thresholds and the
+    // flow's transaction type (tuple: cum, dst, isWrite);
     // tableThresholds[id] (sum of the source's pirs) is that source's
     // per-cycle injection probability. --injection-rate is ignored in
-    // table mode.
+    // table mode. A missing rw column in a 3-column legacy line means
+    // W (writeback on replacement), matching pre-rw-column semantics.
     std::vector<double> tableThresholds;
-    std::vector<std::vector<std::pair<double, int>>> tableEntries;
+    std::vector<std::vector<std::tuple<double, int, bool>>> tableEntries;
     void initTrafficTable(const std::string &fname);
 
     const Cycles responseLimit;

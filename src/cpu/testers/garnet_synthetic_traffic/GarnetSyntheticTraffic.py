@@ -105,14 +105,30 @@ class GarnetSyntheticTraffic(ClockedObject):
     traffic_table = Param.String(
         "",
         "Path to a traffic-pattern table, required by traffic_type='table'. "
-        "Each line: 'src_id dst_id pir' (whitespace-separated; '#' comments; "
-        "one optional header line is skipped). pir in [0,1] is that "
-        "(src,dst) pair's per-cycle packet injection probability; each "
-        "source's pir sum must not exceed 1. Any inconsistency (out-of-range "
-        "or inactive ids, duplicate pairs, pir sum > 1) is fatal. The table "
-        "fully replaces inj_rate in table mode.",
+        "Each line: 'src_id dst_id [R|W] pir' (whitespace-separated; '#' "
+        "comments; one optional header line is skipped). pir in [0,1] is "
+        "that (src,dst) pair's per-cycle packet injection probability; each "
+        "source's pir sum must not exceed 1. The 3rd column picks "
+        "the transaction type: R = read (fetch-only; the clean line is "
+        "dropped silently on replacement), W = write (fire-and-forget: "
+        "PUTX + WB_ACK; no fetch, no cached line). The legacy 3-column "
+        "format 'src_id dst_id pir' (no rw column) is still accepted and "
+        "means W. Any inconsistency "
+        "(out-of-range or inactive ids, duplicate pairs, pir sum > 1, bad "
+        "type) is fatal. The table fully replaces inj_rate in table mode.",
     )
     inj_rate = Param.Float(0.1, "Packet injection rate")
+    traffic_read_ratio = Param.Float(
+        0.5,
+        "Probability that a generated access is a read (RubyRequestType_LD); "
+        "otherwise it is a write (RubyRequestType_ST). Applies to all "
+        "non-table traffic types; table mode takes each flow's type from "
+        "the table's rw column instead. Under AIGCIC_NOC, read-fetched lines "
+        "land in a clean state and are dropped silently on replacement (no "
+        "PUTX/WB_ACK), while write-fetched lines are written back on "
+        "replacement. The retired inj_vnet-based request-type selection is "
+        "replaced by this parameter (the AIGCIC vnet is address-driven).",
+    )
     inj_vnet = Param.Int(
         -1,
         "Vnet to inject in. \

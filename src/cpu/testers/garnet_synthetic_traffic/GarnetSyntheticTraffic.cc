@@ -100,6 +100,7 @@ GarnetSyntheticTraffic::GarnetSyntheticTraffic(const Params &p)
       activeRows(p.active_rows),
       trafficType(p.traffic_type),
       injRate(p.inj_rate),
+      trafficReadRatio(p.traffic_read_ratio),
       injVnet(p.inj_vnet),
       precision(p.precision),
       responseLimit(p.response_limit),
@@ -114,6 +115,15 @@ GarnetSyntheticTraffic::GarnetSyntheticTraffic(const Params &p)
         fatal("Unknown Traffic Type: %s!\n", traffic);
     }
     traffic = trafficStringToEnum[trafficType];
+
+    if (trafficReadRatio < 0.0 || trafficReadRatio > 1.0) {
+        fatal("%s: --traffic-read-ratio %g outside [0, 1]\n",
+              name(), trafficReadRatio);
+    }
+    DPRINTF(GarnetSyntheticTraffic,
+            "read/write mix: reads drawn with probability %g (retired "
+            "inj_vnet-based type selection; param value %d kept for "
+            "compatibility)\n", trafficReadRatio, injVnet);
 
     // Table-driven traffic: parse and validate --traffic-table up front,
     // strictly fatal on any inconsistency, so a typo can never silently
@@ -237,6 +247,10 @@ GarnetSyntheticTraffic::generatePkt()
     int source = id;
     int src_x = id%radix;
     int src_y = id/radix;
+    // Transaction type of the generated access; only table mode assigns
+    // it here (from the chosen flow's rw column). Other modes draw it
+    // from --traffic-read-ratio right before the request is built.
+    bool flowWrite = true;
 
     // Condition 1: sources outside the active (row, col) region never inject.
     if (activeColumns > 0 || activeRows > 0) {
@@ -246,24 +260,25 @@ GarnetSyntheticTraffic::generatePkt()
 
     if (traffic == TABLE_) {
         // Per-source PIR table: with probability tableThresholds[id] a
-        // packet is injected this cycle; the destination is picked from
-        // the cumulative PIR distribution (entry i wins when r falls in
-        // [cum[i-1], cum[i])). singleDest, if set, only overrides the
-        // destination, not the threshold gate.
+        // packet is injected this cycle; the destination (and the flow's
+        // rw type) is picked from the cumulative PIR distribution (entry
+        // i wins when r falls in [cum[i-1], cum[i])). singleDest, if set,
+        // only overrides the destination, not the threshold gate.
         double r = rng->random<double>();
         if (r >= tableThresholds[id]) {
             return;
         }
+        flowWrite = std::get<2>(tableEntries[id].back());
+        destination = std::get<1>(tableEntries[id].back());
+        for (const auto &entry : tableEntries[id]) {
+            if (r < std::get<0>(entry)) {
+                flowWrite = std::get<2>(entry);
+                destination = std::get<1>(entry);
+                break;
+            }
+        }
         if (singleDest >= 0) {
             destination = singleDest;
-        } else {
-            destination = tableEntries[id].back().second;
-            for (const auto &entry : tableEntries[id]) {
-                if (r < entry.first) {
-                    destination = entry.second;
-                    break;
-                }
-            }
         }
     } else if (singleDest >= 0)
     {
@@ -436,8 +451,9 @@ GarnetSyntheticTraffic::generatePkt()
     // while responses are "data" packets (typically 72 bytes).
     //
     // Life of a packet from the tester into the network:
-    // (1) This function generatePkt() generates packets of one of the
-    //     following 3 types (randomly) : ReadReq, INST_FETCH, WriteReq
+    // (1) generatePkt() generates a ReadReq (read) or WriteReq (write),
+    //     per --traffic-read-ratio (non-table modes) or the table's rw
+    //     column (table mode)
     // (2) mem/ruby/system/RubyPort.cc converts these to RubyRequestType_LD,
     //     RubyRequestType_IFETCH, RubyRequestType_ST respectively
     // (3) mem/ruby/system/Sequencer.cc sends these to the cache controllers
@@ -456,35 +472,19 @@ GarnetSyntheticTraffic::generatePkt()
     RequestPtr req = nullptr;
     Request::Flags flags;
 
-    // Inject in specific Vnet
-    // Vnet 0 and 1 are for control packets (1-flit)
-    // Vnet 2 is for data packets (5-flit)
-    int injReqType = injVnet;
-
-    if (injReqType < 0 || injReqType > 2)
-    {
-        // randomly inject in any vnet
-        injReqType = rng->random(0, 2);
-    }
-
-    if (injReqType == 0) {
-        // generate packet for virtual network 0
-        requestType = MemCmd::ReadReq;
-        req = std::make_shared<Request>(paddr, access_size, flags,
-                                        requestorId);
-    } else if (injReqType == 1) {
-        // generate packet for virtual network 1
-        requestType = MemCmd::ReadReq;
-        flags.set(Request::INST_FETCH);
-        req = std::make_shared<Request>(
-            0x0, access_size, flags, requestorId, 0x0, 0);
-        req->setPaddr(paddr);
-    } else {  // if (injReqType == 2)
-        // generate packet for virtual network 2
-        requestType = MemCmd::WriteReq;
-        req = std::make_shared<Request>(paddr, access_size, flags,
-                                        requestorId);
-    }
+    // Read vs write: in table mode the chosen flow's rw column decides;
+    // in all other modes --traffic-read-ratio decides (default 0.5).
+    // Under AIGCIC_NOC the network vnet is chosen by the protocol from
+    // the address (internal vs cross-die), so the retired inj_vnet-based
+    // type selection no longer applies. Reads fetch clean lines (the L1
+    // drops them silently on replacement, no PUTX/WB_ACK); writes fetch
+    // dirty lines that are written back on replacement.
+    bool isRead = traffic == TABLE_
+        ? !flowWrite
+        : rng->random<double>() < trafficReadRatio;
+    requestType = isRead ? MemCmd::ReadReq : MemCmd::WriteReq;
+    req = std::make_shared<Request>(paddr, access_size, flags,
+                                    requestorId);
 
     req->setContext(id);
 
@@ -527,9 +527,9 @@ GarnetSyntheticTraffic::initTrafficTable(const std::string &fname)
     tableThresholds.assign(numDestinations, 0.0);
     tableEntries.assign(numDestinations, {});
 
-    // First pass: per-source (dst -> pir) maps; catches range, pir-value
-    // and duplicate errors before anything is cumulated.
-    std::vector<std::map<int, double>> raw(numDestinations);
+    // First pass: per-source (dst -> (pir, isWrite)) maps; catches range,
+    // pir-value, type and duplicate errors before anything is cumulated.
+    std::vector<std::map<int, std::pair<double, bool>>> raw(numDestinations);
     size_t num_pairs = 0;
 
     std::string line;
@@ -543,9 +543,9 @@ GarnetSyntheticTraffic::initTrafficTable(const std::string &fname)
 
         std::istringstream iss(line.substr(first));
         int src, dst;
-        double pir;
-        if (!(iss >> src >> dst >> pir)) {
-            // Tolerate exactly one header line, e.g. "src_id dst_id pir":
+        std::string tok;
+        if (!(iss >> src >> dst >> tok)) {
+            // Tolerate exactly one header line, e.g. "src dst rw pir":
             // a non-numeric line without any digit character (real data
             // lines always contain digits, so this cannot mask typos).
             if (!headerSeen &&
@@ -553,13 +553,43 @@ GarnetSyntheticTraffic::initTrafficTable(const std::string &fname)
                 headerSeen = true;
                 continue;
             }
-            fatal("%s: %s:%d: expected 'src_id dst_id pir'\n",
+            fatal("%s: %s:%d: expected 'src_id dst_id [R|W] pir' (or "
+                  "legacy 'src_id dst_id pir')\n",
+                  name(), fname, lineno);
+        }
+        // 3rd column: transaction type (new format 'src dst rw pir') or
+        // the pir itself (legacy 3-column 'src dst pir', which keeps the
+        // pre-rw-column semantics: W).
+        bool isWrite = true;
+        bool rwGiven = false;
+        double pir;
+        if (tok == "R" || tok == "r" || tok == "W" || tok == "w") {
+            isWrite = (tok[0] == 'W' || tok[0] == 'w');
+            rwGiven = true;
+        } else {
+            size_t pos = 0;
+            try {
+                pir = std::stod(tok, &pos);
+            } catch (const std::exception &) {
+                fatal("%s: %s:%d: expected 'src_id dst_id [R|W] pir' (or "
+                      "legacy 'src_id dst_id pir'); 3rd token '%s' is "
+                      "neither R/W nor a pir\n",
+                      name(), fname, lineno, tok.c_str());
+            }
+            if (pos != tok.size()) {
+                fatal("%s: %s:%d: malformed pir '%s'\n",
+                      name(), fname, lineno, tok.c_str());
+            }
+        }
+        if (rwGiven && !(iss >> pir)) {
+            fatal("%s: %s:%d: missing pir after the rw column\n",
                   name(), fname, lineno);
         }
         std::string extra;
         if (iss >> extra) {
-            fatal("%s: %s:%d: trailing characters after pir ('%s')\n",
-                  name(), fname, lineno, extra);
+            fatal("%s: %s:%d: trailing characters ('%s'); format is "
+                  "'src_id dst_id [R|W] pir'\n",
+                  name(), fname, lineno, extra.c_str());
         }
 
         if (src < 0 || src >= numDestinations)
@@ -581,7 +611,7 @@ GarnetSyntheticTraffic::initTrafficTable(const std::string &fname)
             fatal("%s: %s:%d: duplicate (src_id=%d, dst_id=%d) pair\n",
                   name(), fname, lineno, src, dst);
 
-        raw[src][dst] = pir;
+        raw[src][dst] = {pir, isWrite};
         num_pairs++;
     }
 
@@ -596,8 +626,8 @@ GarnetSyntheticTraffic::initTrafficTable(const std::string &fname)
     for (int s = 0; s < numDestinations; s++) {
         double cum = 0.0;
         for (const auto &kv : raw[s]) {
-            cum += kv.second;
-            tableEntries[s].emplace_back(cum, kv.first);
+            cum += kv.second.first;
+            tableEntries[s].emplace_back(cum, kv.first, kv.second.second);
         }
         tableThresholds[s] = cum;
         if (cum > 1.0 + 1e-9) {

@@ -84,12 +84,30 @@ parser.add_argument(
     "--traffic-table",
     default=None,
     help="Traffic-pattern table for --synthetic=table: each line "
-         "'src_id dst_id pir' (whitespace separated, '#' comments, one "
-         "optional header line). pir in [0,1] is that (src,dst) pair's "
-         "per-cycle packet injection probability; each source's pir sum "
-         "must not exceed 1. In table mode --injectionrate is ignored. "
-         "IDs are router ids and must lie inside the active region when "
-         "--num-active-columns/rows is used.",
+         "'src_id dst_id [R|W] pir' (whitespace separated, '#' comments, "
+         "one optional header line). The 3rd column picks the transaction "
+         "type: R = read (fetch-only, GETX+Data; the clean line is dropped "
+         "silently on replacement), W = write (fire-and-forget: PUTX carries "
+         "the write, then WB_ACK; no fetch, no cached line); the legacy "
+         "3-column format 'src_id dst_id pir' is still accepted and means "
+         "W. pir in [0,1] is that (src,dst) pair's per-cycle packet "
+         "injection probability; each source's pir sum must not exceed 1. "
+         "In table mode --injectionrate is ignored. IDs are router ids and "
+         "must lie inside the active region when --num-active-columns/rows "
+         "is used.",
+)
+
+parser.add_argument(
+    "--traffic-read-ratio",
+    type=float,
+    default=0.5,
+    help="Probability that a generated access is a read (non-table modes "
+         "only; table mode takes each flow's type from the table's 4th "
+         "'rw' column instead). Reads are fetch-only (GETX + Data; the "
+         "clean line is dropped silently on replacement, no PUTX/WB_ACK); "
+         "writes additionally write the line back on replacement (GETX + "
+         "Data + PUTX + WB_ACK). Default 0.5. Use 0 to reproduce the "
+         "pre-r/w-split §6-era load (every access writes back).",
 )
 
 parser.add_argument(
@@ -289,6 +307,9 @@ if args.synthetic == "table":
 elif args.traffic_table:
     fatal("--traffic-table is only valid with --synthetic=table.")
 
+if not 0.0 <= args.traffic_read_ratio <= 1.0:
+    fatal("--traffic-read-ratio %g outside [0, 1]."
+          % args.traffic_read_ratio)
 
 def check_address_encoding(args):
     """Validate the synthetic-traffic address encoding.
@@ -424,7 +445,6 @@ def check_address_encoding(args):
             working_set // 1024,
         )
 
-
 if args.cross_die_ratio > 0 and args.addr_layout != "mpu52":
     fatal(
         "--cross-die-ratio requires --addr-layout=mpu52: the legacy "
@@ -456,7 +476,6 @@ print("Address layout: %s (dest field at bit %d, lines_per_dest=%d)"
 
 check_address_encoding(args)
 
-
 cpus = [
     GarnetSyntheticTraffic(
         num_packets_max=args.num_packets_max,
@@ -469,6 +488,7 @@ cpus = [
         active_rows=args.num_active_rows,
         inj_rate=args.injectionrate,
         traffic_table=args.traffic_table or "",
+        traffic_read_ratio=args.traffic_read_ratio,
         inj_vnet=args.inj_vnet,
         precision=args.precision,
         num_dest=args.num_dirs,
@@ -506,7 +526,6 @@ if args.addr_layout == "mpu52":
         system.external_memory_ranges = [AddrRange(0, size=1 << 51)]
 else:
     system = System(cpu=cpus, mem_ranges=[AddrRange(args.mem_size)])
-
 
 # Create a top-level voltage domain and clock domain
 system.voltage_domain = VoltageDomain(voltage=args.sys_voltage)

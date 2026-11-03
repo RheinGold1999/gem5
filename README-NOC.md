@@ -120,7 +120,7 @@ a **logical 4x6 mesh on a 4x8 fabric**:
 | `--num-active-columns` / `--num-active-rows` | 6 / 4 | traffic masked to the top-left 4x6 sub-mesh |
 | `--link-width-bits` | 1024 | 128 B flits |
 | `--vcs-per-vnet` | 1 | one VC per vnet |
-| `--inj-vnet` | 0 | inject on vnet0 (request internal-die); only vnet0 has receiving agents |
+| `--inj-vnet` | 0 | retired for request-type selection (reads/writes are now chosen by `--traffic-read-ratio` / the table `rw` column); kept only for Network_test compatibility — AIGCIC vnets are address-driven |
 | `--addr-layout` | `mpu52` | **MPU-Die 52-bit node addressing** (see §3.6): node field [36:32] = `(col<<2)\|row`, per-node 4 GiB windows, range-based dir routing, `--lines-per-dest` = 2^25, zero-backing `SimpleMemory(null=True)`. Use `--addr-layout=legacy` for the old `[line\|dest\|offset]`+XOR layout (512 MiB interleaved space, `--lines-per-dest=1024`, `--xor-low-bit=22`) |
 | `--xor-low-bit` | 22 (legacy only) | XOR-hash low bit; forced to 0 in mpu52 (range-based routing needs no hashing). Required for 32 dirs + `--lines-per-dest=1024` at 128 B lines in legacy |
 | `--data-msg-size` / `--cacheline_size` | 128 / 128 | data payload = one full flit; the Ruby line size is raised together so `data_msg_size ≤ cacheline_size` holds |
@@ -279,28 +279,38 @@ legacy baseline within noise.
 | `--mesh-rows` | rows of the mesh (columns derived) |
 | `--synthetic` | traffic pattern: `uniform_random`, `neighbor` and `table` (the only patterns compatible with active-column masking; `neighbor` sends to a uniformly chosen physically adjacent node E/W/N/S inside the active region -- interior 4, edge 3, corner 2 neighbors; `table` follows the user PIR table), `tornado`, `bit_complement`, `bit_reverse`, `bit_rotation`, `shuffle`, `transpose` |
 | `--traffic-table` | traffic-pattern file for `--synthetic=table`: each line `src_id dst_id pir` (whitespace separated, `#` comments, one optional header line). pir in [0,1] is that pair's per-cycle packet injection probability; each source's pir sum must not exceed 1. In table mode `--injectionrate` is ignored. Out-of-range/inactive ids, duplicate pairs and pir sums > 1 are fatal |
+| `--traffic-read-ratio` | probability that a generated access is a **read** (non-table modes; table mode uses the per-flow `rw` column). Both types cost 2 msgs/access: R = GETX + Data (clean line dropped silently on replacement), W = fire-and-forget PUTX + WB_ACK (the PUTX carries the write; no fetch, no cached line) |
 | `--injectionrate` | packets/cycle/node (0..1) |
 | `--sim-cycles` | simulation length in **ticks** (see note above) |
 | `--data-msg-size` (+ `--cacheline_size`) | data payload bytes; flits = `ceil(payload / flit_size)` |
 | `--link-width-bits` | flit size in bits (default 1024) |
 | `--num-active-columns` / `--num-active-rows` | restrict traffic to the top-left `rows x cols` sub-mesh; 0 = full fabric |
-| `--inj-vnet` | 0 = request internal-die (default), 2 = response internal-die; cross-die vnet1/vnet3 are addressed by the address map (`--cross-die-ratio`), not by this knob |
+| `--inj-vnet` | retired for request-type selection (was: 0 = request internal-die, 2 = response). The read/write mix now comes from `--traffic-read-ratio` / the table's `rw` column; AIGCIC vnets are address-driven (`--cross-die-ratio`), not chosen by this knob |
 | `--switch-arbiter` | `round_robin`, `router_age_based`, `global_age_based` |
 | `--lines-per-dest`, `--xor-low-bit`, `--l1d_size`, `--l1d_assoc` | address-map knobs: spread traffic over many cache lines; the driver validates the address encoding against the XOR-hash bits |
 
 ### 3.8 Table-driven traffic (`--synthetic=table`)
 
 `--synthetic=table` reads a user traffic-pattern file
-(`--traffic-table=<file>`, one `src_id dst_id pir` line per flow) and
-injects exactly that: every cycle a source sends one packet with
-probability `sum(pir of its entries)` (the threshold), and the
-destination is drawn from the pairs' cumulative pir. pir is in [0,1]
-and each source's pir sum must stay <= 1. Since flows are unconstrained
-by geometry, arbitrary point-to-point loadings are expressible; nodes
-without table entries never inject, and `--injectionrate` is ignored in
-this mode. Ids are router ids in row-major order
-(`id = mesh_row * numColumns + col`; on the default 4x6-on-4x8 mesh
-`numColumns = 8`, so row 0 = ids 0..5, row 1 = 8..13, ...).
+(`--traffic-table=<file>`, one `src_id dst_id [R|W] pir` line per
+flow) and injects exactly that: every cycle a source sends one packet
+with probability `sum(pir of its entries)` (the threshold), and the
+destination and transaction type are drawn from the pairs' cumulative
+pir. pir is in [0,1] and each source's pir sum must stay <= 1. The
+3rd column picks the transaction type — both cost exactly
+**2 msgs/access** (1 request-direction + 1 response-direction flit):
+**R** = read (GETX fetch + Data response; the clean line is dropped
+silently on replacement — no PUTX/WB_ACK), **W** = write
+(fire-and-forget, write-no-allocate: the PUTX itself carries the
+write — no GETX fetch, no cache line — and the dir's WB_ACK completes
+it). A missing column means W, so legacy 3-column tables keep their
+write semantics. Non-table modes mix reads/writes with probability
+`--traffic-read-ratio` (default 0.5). Since flows are unconstrained by geometry, arbitrary
+point-to-point loadings are expressible; nodes without table entries
+never inject, and `--injectionrate` is ignored in this mode. Ids are
+router ids in row-major order (`id = mesh_row * numColumns + col`; on
+the default 4x6-on-4x8 mesh `numColumns = 8`, so row 0 = ids 0..5,
+row 1 = 8..13, ...).
 
 One-to-many: one producer fans out to four consumers, 0.4 pkts/cyc
 total injection (`one2many.tbl`):
@@ -445,6 +455,14 @@ All runs: ideal DRAM, 4x6 active mesh on the 4x8 fabric, 1024-bit
 links, 1-flit packets, `max_outstanding_requests=256`,
 `--synthetic=uniform_random --injectionrate=0.99 --sim-cycles=200000000`
 (= 200 000 cycles).
+
+**Era note**: these numbers predate the read/write split and the
+fire-and-forget write change (back then every access fetched AND wrote
+back, ≈4 msgs/access). That behavior is no longer reachable via flags —
+treat these numbers as historical. Current semantics: R and W both cost
+2 msgs/access; with the default 0.5 mix the same traffic table now
+accepts roughly twice the accesses at the same message load. Re-run the
+sweep before comparing against these rows.
 
 * **legacy layout** (now needs `--addr-layout=legacy`; measured before
   it became non-default, with the then-64 B-line default — packet and

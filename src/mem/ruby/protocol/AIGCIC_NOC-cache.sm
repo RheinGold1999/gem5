@@ -28,9 +28,14 @@
  */
 
 // AIGCIC_NOC L1 cache controller (GPU-style, no cache coherence).
-// Loads/stores issue GETX on miss; dirty lines are written back with PUTX
-// on replacement. No invalidations are ever received (the DRAM-controller
-// agent never forwards requests).
+// Loads issue GETX on miss and land in S (clean): the line is dropped
+// silently on replacement (no PUTX/WB_ACK). Stores are fire-and-forget
+// write-no-allocate: the store issues PUTX directly (no GETX fetch, no
+// cache line; the message itself carries the write) and is completed by
+// the dir's WB_ACK — 2 msgs/access, same as a read. Store hits on clean
+// lines dirty them locally (S -> M, no traffic); M lines are written
+// back with PUTX on replacement. No invalidations are ever received
+// (the DRAM-controller agent never forwards requests).
 
 machine(MachineType:L1Cache, "AIGCIC NoC L1 Cache")
     : Sequencer * sequencer;
@@ -71,11 +76,12 @@ machine(MachineType:L1Cache, "AIGCIC NoC L1 Cache")
   // STATES
   state_declaration(State, desc="Cache states") {
     I, AccessPermission:Invalid, desc="Not Present/Invalid";
-    M, AccessPermission:Read_Write, desc="Modified";
+    M, AccessPermission:Read_Write, desc="Modified (write-fetched or stored; writes back on replacement)";
+    S, AccessPermission:Read_Only, desc="Clean (read-fetched); dropped silently on replacement";
     MI, AccessPermission:Maybe_Stale, desc="Modified, issued PUT";
 
     IS, AccessPermission:Busy, desc="Issued request for LOAD/IFETCH";
-    IM, AccessPermission:Busy, desc="Issued request for STORE/ATOMIC";
+    IM, AccessPermission:Busy, desc="Issued fire-and-forget write PUT (awaiting WB_ACK; no cache line)";
   }
 
   // EVENTS
@@ -389,6 +395,32 @@ machine(MachineType:L1Cache, "AIGCIC NoC L1 Cache")
     }
   }
 
+  // Fire-and-forget write: the PUTX itself carries the write (payload
+  // content is irrelevant for the synthetic traffic, the block stays
+  // zeroed) and no cache line is allocated. Sized like the eviction
+  // PUTX (Data => 1 burst flit at the 128 B default), so a write costs
+  // exactly PUTX + WB_ACK.
+  action(bw_issuePUTWrite, "bw", desc="Issue a fire-and-forget write PUTX (no fetch, no line)") {
+    enqueue(requestNetwork_out, RequestMsg, issue_latency) {
+      out_msg.addr := address;
+      out_msg.Type := CoherenceRequestType:PUTX;
+      out_msg.Requestor := machineID;
+      out_msg.Destination.add(mapAddressToMachine(address, MachineType:Directory));
+      out_msg.MessageSize := MessageSizeType:Data;
+    }
+  }
+
+  action(bwx_issuePUTWriteXD, "bwx", desc="Issue a cross-die fire-and-forget write PUTX (vnet1)") {
+    enqueue(requestXDNetwork_out, RequestMsg, issue_latency) {
+      out_msg.addr := address;
+      out_msg.Type := CoherenceRequestType:PUTX;
+      out_msg.Requestor := machineID;
+      out_msg.Destination.add(mapAddressToMachine(localDieAddr(address),
+                                                  MachineType:Directory));
+      out_msg.MessageSize := MessageSizeType:Data;
+    }
+  }
+
   action(i_allocateL1CacheBlock, "i", desc="Allocate a cache block") {
     if (is_valid(cache_entry)) {
     } else {
@@ -475,6 +507,19 @@ machine(MachineType:L1Cache, "AIGCIC NoC L1 Cache")
     }
   }
 
+  // Fire-and-forget store completion: no cache line exists, the store's
+  // data went out with the PUTX; the callback only releases the
+  // sequencer slot (TBE holds a zeroed block for the required DataBlock&).
+  action(sw_store_hit_no_line, "sw", desc="Fire-and-forget store completed (no cached line).") {
+    assert(is_valid(tbe));
+    sequencer.writeCallback(address, tbe.DataBlk);
+  }
+
+  action(swx_store_hit_no_line_xd, "swx", desc="Cross-die fire-and-forget store completed.") {
+    assert(is_valid(tbe));
+    sequencer.writeCallback(address, tbe.DataBlk);
+  }
+
   action(u_writeDataToCache, "u", desc="Write data to the cache") {
     peek(responseNetwork_in, ResponseMsg) {
       assert(is_valid(cache_entry));
@@ -531,24 +576,39 @@ machine(MachineType:L1Cache, "AIGCIC NoC L1 Cache")
     m_popMandatoryQueue;
   }
 
+  // Clean-line hits: reads stay clean; a store dirties the line locally
+  // (no network traffic now, PUTX on replacement instead).
+  transition(S, {Load, Ifetch, Load_XD, Ifetch_XD}) {
+    r_load_hit;
+    p_profileHit;
+    m_popMandatoryQueue;
+  }
+
+  transition(S, {Store, Store_XD}, M) {
+    s_store_hit;
+    p_profileHit;
+    m_popMandatoryQueue;
+  }
+
   transition(M, {Load, Ifetch, Load_XD, Ifetch_XD}) {
     r_load_hit;
     p_profileHit;
     m_popMandatoryQueue;
   }
 
+  // Fire-and-forget write: the PUTX carries the write itself; no GETX
+  // is sent and no cache line is allocated. The WB_ACK completes the
+  // store and releases the TBE. 2 msgs/access, like a read.
   transition(I, Store, IM) {
     v_allocateTBE;
-    i_allocateL1CacheBlock;
-    a_issueRequest;
+    bw_issuePUTWrite;
     p_profileMiss;
     m_popMandatoryQueue;
   }
 
   transition(I, Store_XD, IM) {
     v_allocateTBE;
-    i_allocateL1CacheBlock;
-    a_issueRequestXD;
+    bwx_issuePUTWriteXD;
     p_profileMiss;
     m_popMandatoryQueue;
   }
@@ -569,35 +629,30 @@ machine(MachineType:L1Cache, "AIGCIC NoC L1 Cache")
     m_popMandatoryQueue;
   }
 
-  transition(IS, Data, M) {
+  transition(IS, Data, S) {
     u_writeDataToCache;
     rx_load_hit;
     w_deallocateTBE;
     n_popResponseQueue;
   }
 
-  transition(IS, Data_XD, M) {
+  transition(IS, Data_XD, S) {
     u_writeDataToCacheXD;
     rx_load_hit_xd;
     w_deallocateTBE;
     n_popResponseXDQueue;
   }
 
-  transition(IM, Data, M) {
-    u_writeDataToCache;
-    sx_store_hit;
-    w_deallocateTBE;
-    n_popResponseQueue;
-  }
-
-  transition(IM, Data_XD, M) {
-    u_writeDataToCacheXD;
-    sx_store_hit_xd;
-    w_deallocateTBE;
-    n_popResponseXDQueue;
-  }
-
   transition(I, Replacement) {
+     h_deallocateL1CacheBlock;
+  }
+
+  // Clean lines are dropped silently: no TBE, no PUTX, no WB_ACK.
+  transition(S, Replacement, I) {
+     h_deallocateL1CacheBlock;
+  }
+
+  transition(S, Replacement_XD, I) {
      h_deallocateL1CacheBlock;
   }
 
@@ -623,6 +678,20 @@ machine(MachineType:L1Cache, "AIGCIC NoC L1 Cache")
   }
 
   transition(MI, Writeback_Ack_XD, I) {
+    w_deallocateTBE;
+    n_popResponseXDQueue;
+  }
+
+  // Write completion of the fire-and-forget store (IM was entered with
+  // no cache line; only the TBE tracks the outstanding PUT).
+  transition(IM, Writeback_Ack, I) {
+    sw_store_hit_no_line;
+    w_deallocateTBE;
+    n_popResponseQueue;
+  }
+
+  transition(IM, Writeback_Ack_XD, I) {
+    swx_store_hit_no_line_xd;
     w_deallocateTBE;
     n_popResponseXDQueue;
   }
