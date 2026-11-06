@@ -36,6 +36,8 @@
 #include <cmath>
 
 #include "base/cast.hh"
+#include "base/cprintf.hh"
+#include "base/statistics.hh"
 #include "debug/RubyNetwork.hh"
 #include "mem/ruby/network/MessageBuffer.hh"
 #include "mem/ruby/network/garnet/Credit.hh"
@@ -59,8 +61,99 @@ NetworkInterface::NetworkInterface(const Params &p)
     m_deadlock_threshold(p.garnet_deadlock_threshold),
     vc_busy_counter(m_virtual_networks, 0)
 {
+    m_last_src_wakeup_cycle = -1;
+    m_src_tail_accounted = 0;
     m_stall_count.resize(m_virtual_networks);
     niOutVcs.resize(0);
+
+    m_src_idle.resize(m_virtual_networks, 0);
+    m_src_xfer.resize(m_virtual_networks, 0);
+    m_src_busy.resize(m_virtual_networks, 0);
+    m_src_backlog.resize(m_virtual_networks, 0);
+}
+
+void
+NetworkInterface::regStats()
+{
+    ClockedObject::regStats();
+
+    m_src_idle_cycles
+        .init(m_virtual_networks)
+        .name(name() + ".ni_src_idle_cycles")
+        .flags(statistics::pdf | statistics::oneline)
+        ;
+
+    m_src_xfer_cycles
+        .init(m_virtual_networks)
+        .name(name() + ".ni_src_xfer_cycles")
+        .flags(statistics::pdf | statistics::oneline)
+        ;
+
+    m_src_busy_cycles
+        .init(m_virtual_networks)
+        .name(name() + ".ni_src_busy_cycles")
+        .flags(statistics::pdf | statistics::oneline)
+        ;
+
+    m_src_backlog_msgs
+        .init(m_virtual_networks)
+        .name(name() + ".ni_src_backlog_msgs")
+        .flags(statistics::pdf | statistics::oneline)
+        ;
+
+    for (int i = 0; i < m_virtual_networks; i++) {
+        m_src_idle_cycles.subname(i, csprintf("vnet-%i", i));
+        m_src_xfer_cycles.subname(i, csprintf("vnet-%i", i));
+        m_src_busy_cycles.subname(i, csprintf("vnet-%i", i));
+        m_src_backlog_msgs.subname(i, csprintf("vnet-%i", i));
+    }
+}
+
+void
+NetworkInterface::resetStats()
+{
+    ClockedObject::resetStats();
+
+    for (int i = 0; i < m_virtual_networks; i++) {
+        m_src_idle[i] = 0;
+        m_src_xfer[i] = 0;
+        m_src_busy[i] = 0;
+        m_src_backlog[i] = 0;
+    }
+    m_last_src_wakeup_cycle = -1;
+    m_src_tail_accounted = 0;
+}
+
+void
+NetworkInterface::collateStats()
+{
+    // Close out the trailing dormant stretch: the cycles after the last
+    // wakeup up to now (dump time) had no ready message at any vnet (the
+    // NI only sleeps when checkReschedule finds nothing pending, and
+    // MessageBuffer::enqueue schedules this NI exactly at a message's
+    // ready time) - IDLE for every served vnet. Idempotent across
+    // multiple dumps: m_src_tail_accounted remembers how much of the
+    // current trailing stretch was already folded in.
+    const int64_t now_cycle = curTick() / clockPeriod();
+    if (now_cycle > m_last_src_wakeup_cycle) {
+        const int64_t tail_total = now_cycle - m_last_src_wakeup_cycle - 1;
+        const int64_t tail_new = tail_total - m_src_tail_accounted;
+        if (tail_new > 0) {
+            for (int vnet = 0; vnet < inNode_ptr.size(); ++vnet) {
+                if (inNode_ptr[vnet] != nullptr) {
+                    m_src_idle[vnet] += tail_new;
+                }
+            }
+            m_src_tail_accounted = tail_total;
+        }
+    }
+
+    for (int i = 0; i < m_virtual_networks; i++) {
+        m_src_idle_cycles[i] = m_src_idle[i];
+        m_src_xfer_cycles[i] = m_src_xfer[i];
+        m_src_busy_cycles[i] = m_src_busy[i];
+        m_src_backlog_msgs[i] = m_src_backlog[i];
+    }
 }
 
 void
@@ -216,6 +309,24 @@ NetworkInterface::wakeup()
     MsgPtr msg_ptr;
     Tick curTime = clockEdge();
 
+    // Cycles this NI slept since the previous wakeup are IDLE for every
+    // vnet it serves (see the class comment on the boundary states).
+    const int64_t now_cycle = curTick() / clockPeriod();
+    if (now_cycle > m_last_src_wakeup_cycle) {
+        // A collateStats() (stats dump) may already have folded the
+        // trailing dormant stretch into m_src_idle; do not re-count it.
+        const uint64_t gap = now_cycle - m_last_src_wakeup_cycle - 1;
+        const uint64_t new_gap = (gap > (uint64_t)m_src_tail_accounted)
+            ? gap - (uint64_t)m_src_tail_accounted : 0;
+        m_src_tail_accounted = 0;   // superseded by this wakeup's gap
+        for (int vnet = 0; vnet < inNode_ptr.size(); ++vnet) {
+            if (inNode_ptr[vnet] != nullptr) {
+                m_src_idle[vnet] += new_gap;
+            }
+        }
+    }
+    m_last_src_wakeup_cycle = now_cycle;
+
     // Checking for messages coming from the protocol
     // can pick up a message/cycle for each virtual net
     for (int vnet = 0; vnet < inNode_ptr.size(); ++vnet) {
@@ -225,10 +336,24 @@ NetworkInterface::wakeup()
         }
 
         if (b->isReady(curTime)) { // Is there a message waiting
+            // Heap occupancy incl. not-yet-ready messages (the NI serves
+            // 1 msg/cycle/vnet, so pending-1 messages are not attempted
+            // this cycle = NI-side serialization backlog).
+            const unsigned pending = b->getSize(curTime);
             msg_ptr = b->peekMsgPtr();
             if (flitisizeMessage(msg_ptr, vnet)) {
                 b->dequeue(curTime);
+                m_src_xfer[vnet]++;
+            } else {
+                // No free output VC: the network refused the head message
+                // (credit starvation = backpressure at the injection door).
+                m_src_busy[vnet]++;
             }
+            if (pending > 1) {
+                m_src_backlog[vnet] += pending - 1;
+            }
+        } else {
+            m_src_idle[vnet]++;
         }
     }
 
@@ -484,9 +609,7 @@ NetworkInterface::flitisizeMessage(MsgPtr msg_ptr, int vnet)
             m_net_ptr->increment_injected_flits(vnet);
             flit *fl = new flit(packet_id,
                 i, vc, vnet, route, num_flits, new_msg_ptr,
-                m_net_ptr->MessageSizeType_to_int(
-                net_msg_ptr->getMessageSize()),
-                oPort->bitWidth(), curTick());
+                msg_bytes, oPort->bitWidth(), curTick());
 
             fl->set_src_delay(curTick() - msg_ptr->getTime());
             niOutVcs[vc].insert(fl);

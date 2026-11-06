@@ -21,6 +21,18 @@ and (b) measured link-activity totals
                                 internal links (all directions)
     ext_in_link_utilization / ext_out_link_utilization   (router->NI / NI->router)
 
+and (c) this fork's per-NI src boundary-state counters
+
+    system.ruby.network.netifs<N>.ni_src_{idle,xfer,busy}_cycles
+        cycle partition of the protocol->network door per (NI, vnet):
+        IDLE = nothing ready, XFER = head message accepted (free VC),
+        BUSY = head message REFUSED (no free out VC = credit backpressure).
+        idle+xfer+busy = the run's network cycles (+-1). Sustained BUSY at
+        an NI = the network saturated at that injection boundary.
+    system.ruby.network.netifs<N>.ni_src_backlog_msgs
+        msgs waiting beyond the head (NI serves 1 msg/cycle/vnet): deep
+        backlog with BUSY ~ 0 = NI-side serialization limit instead.
+
 This script reconstructs, hop by hop, the flit load of EVERY internal link
 under the exact routing used by the run (Mesh_XY: X/col phase first with
 weight 1, then Y/row phase with weight 2; a 5-flit wormhole crosses each hop
@@ -102,6 +114,12 @@ def parse_stats(path):
         r"flit_lifetime_median|flit_lifetime_p75|flit_lifetime_max|"
         r"flit_network_latency_median|flit_network_latency_p75|"
         r"flit_network_latency_max)\s+(.*)$")
+    # per-vnet injected/received vectors (one-line '|' format)
+    vrx = re.compile(r"^system\.ruby\.network\.(packets_injected|flits_injected|"
+                     r"packets_received|flits_received)\s+(.*)$")
+    # per-NI src boundary-state counters (this fork's NetworkInterface)
+    nirx = re.compile(r"^system\.ruby\.network\.netifs(\d+)\.ni_src_(\w+)\s+(.*)$")
+    nis = {}
     numrx = re.compile(r"[\d.]+(?:[eE][+-]?\d+)?")
     with open(path) as f:
         for line in f:
@@ -131,6 +149,15 @@ def parse_stats(path):
                     totals[mf.group(1)] = \
                         vals if len(vals) > 1 else vals[0]
                 continue
+            mv = vrx.match(line)
+            if mv:
+                totals[mv.group(1) + "_vnet"] = parse_stat_vector(mv.group(2))
+                continue
+            mn = nirx.match(line)
+            if mn:
+                nis.setdefault(int(mn.group(1)), {})[mn.group(2)] = \
+                    parse_stat_vector(mn.group(3))
+                continue
             if residency_ticks is None and "pwrStateResidencyTicks" in line:
                 residency_ticks = int(line.split()[1])
             mt = re.match(r"^system\.ruby\.network\.(flits_injected|flits_received|packets_injected|"
@@ -139,7 +166,7 @@ def parse_stats(path):
             if mt:
                 totals[f"{mt.group(1)}::total" if mt.group(2) else mt.group(1)] = \
                     int(mt.group(3))
-    return data, ctrl, totals, residency_ticks, rstat, bufs
+    return data, ctrl, totals, residency_ticks, rstat, bufs, nis
 
 
 def parse_stat_vector(col):
@@ -235,7 +262,8 @@ def read_config(path):
            "active_cols": None, "active_rows": None, "protocol": None,
            "ext_map": {}, "buf_dir": {},
            "data_msg_size": None, "control_msg_size": None,
-           "ni_flit_size": None, "burst_size": None}
+           "ni_flit_size": None, "ext_order": [], "vcs_per_vnet": None,
+           "burst_size": None}
     if not os.path.exists(path):
         return cfg
     in_network = False
@@ -243,6 +271,7 @@ def read_config(path):
     in_tester = False          # inside a [system.cpu*] GarnetSyntheticTraffic section
     cur_is_tester = False      # current [section] is a cpu/tester section
     cur_ext = None             # controller name of the ext_links section being read
+    cur_ext_no = None          # ... and its ext_links<N> index (= the NI id)
     cur_buf = None             # (controller, buffer) of the MessageBuffer section
     with open(path) as f:
         for line in f:
@@ -251,10 +280,13 @@ def read_config(path):
                 in_network = (line == "[system.ruby.network]")
                 in_ruby_clk = (line == "[system.ruby.clk_domain]")
                 m = re.match(r"^\[system\.ruby\.network\.(routers|ext_links)"
-                            r"[0-9]*\]$", line)
+                            r"(\d*)\]$", line)
                 if m:
-                    cfg["num_routers" if m.group(1) == "routers"
-                        else "num_ext_links"] += 1
+                    if m.group(1) == "routers":
+                        cfg["num_routers"] += 1
+                    else:
+                        cfg["num_ext_links"] += 1
+                        cur_ext_no = int(m.group(2))
                 cur_ext = None
                 # MessageBuffer section: [system.ruby.<ctrl>.<buffer>]
                 mb = re.match(r"^\[system\.ruby\.(\w+)\.(\w+)\]$", line)
@@ -278,6 +310,11 @@ def read_config(path):
                              line)
                 if m:
                     cfg["ext_map"][cur_ext] = int(m.group(1))
+                    # NI id i <-> ext_links section i (Network.py creates
+                    # netifs in ext_links order); keeps the NI grid mapping.
+                    while len(cfg["ext_order"]) <= (cur_ext_no or 0):
+                        cfg["ext_order"].append(None)
+                    cfg["ext_order"][cur_ext_no] = (cur_ext, int(m.group(1)))
                     cur_ext = None
                 continue
             if re.match(r"^\s*type=GarnetSyntheticTraffic\b", line):
@@ -317,6 +354,9 @@ def read_config(path):
                 m = re.match(r"^\s*ni_flit_size=(\d+)", line)
                 if m and cfg["ni_flit_size"] is None:
                     cfg["ni_flit_size"] = int(m.group(1))
+                m = re.match(r"^\s*vcs_per_vnet=(\d+)", line)
+                if m and cfg["vcs_per_vnet"] is None:
+                    cfg["vcs_per_vnet"] = int(m.group(1))
             # active sub-mesh mask of the synthetic testers (all share the same
             # values; 0 = no limit on that axis)
             m = re.match(r"^\s*active_columns=(\d+)", line)
@@ -561,7 +601,7 @@ def run_analysis(stats_path, args):
     if cmd:
         print(f"# {cmd}")
 
-    data, ctrl, totals, residency, rstat, bufs = parse_stats(stats_path)
+    data, ctrl, totals, residency, rstat, bufs, nis = parse_stats(stats_path)
     max_id = max([max(s, d) for (s, d) in data] +
                  [max(s, d) for (s, d) in ctrl])
     # data/ctrl_traffic_distribution is keyed by ROUTER id, not controller/node
@@ -765,6 +805,144 @@ def run_analysis(stats_path, args):
           f"{est_flits} flits est")
     print(f"  vs stats: packets_injected {totals.get('packets_injected::total')}, "
           f"flits_injected {totals.get('flits_injected::total')}\n")
+
+    # --- src-NI boundary states (protocol->network door) ---------------------
+    # Per-NI counters added to this fork's NetworkInterface. Every (NI, vnet)
+    # cycle is one of:
+    #   IDLE  nothing ready at the NI (incl. the cycles the NI slept)
+    #   XFER  head message accepted into the network (free out VC found)
+    #   BUSY  head message REFUSED - no free out VC = credit-starvation
+    #         backpressure; sustained BUSY = the network is saturated at that
+    #         injection boundary (first-order saturation probe)
+    # idle+xfer+busy = the run's network cycles (±1: an event exactly at the
+    # dump tick may classify one unsimulated cycle). backlog = msgs waiting
+    # beyond the head (NI serves 1 msg/cycle/vnet): deep backlog with
+    # BUSY~0 = NI-side serialization limit, not network refusal.
+    # Drawn FIRST as per-router matrices (one per vnet x controller kind,
+    # cell = XFER/BUSY/IDLE % of that door's served cycles); a kind whose
+    # doors on that vnet never inject (e.g. the L1's responseFromCache on
+    # vnet2) is noted instead of drawn, so cells are never diluted.
+    if nis:
+        def gv(s, k, v):
+            vec = s.get(k) or []
+            return vec[v] if v < len(vec) and vec[v] is not None else 0.0
+
+        nv = max(len(vec) for s in nis.values() for vec in s.values())
+        ext_order = cfg.get("ext_order") or []
+        kind_disp = {"l1": "L1", "dir": "Dir", "dma": "DMA"}
+
+        def who(ni):
+            if ni < len(ext_order) and ext_order[ni]:
+                ctrl_name, rid = ext_order[ni]
+                r, c = divmod(rid, cols)
+                return f"{ctrl_name} @ router ({r},{c})"
+            return "router ?"
+
+        # NI ids grouped by (kind, router id); ext_links section order == NI id
+        by_kind_router = defaultdict(lambda: defaultdict(list))
+        for ni in nis:
+            if ni < len(ext_order) and ext_order[ni]:
+                ctrl_name, rid = ext_order[ni]
+                by_kind_router[ctrl_name.split("_")[0]][rid].append(ni)
+
+        print(f"--- src-NI boundary states (protocol->network door; "
+              f"{len(nis)} NIs, {cycles} network cycles) ---")
+        vcsv = cfg.get("vcs_per_vnet")
+        if vcsv:
+            print(f"  (vcs_per_vnet={vcsv}: BUSY includes the normal VC credit "
+                  f"round-trip (~4-6 cyc); door throughput caps at "
+                  f"~{vcsv}/5 = {vcsv/5:.2f} msg/cyc/vnet, so BUSY -> 100% as "
+                  f"XFER approaches that. BUSY near 100% at LOW XFER = credits "
+                  f"stuck by downstream congestion.)")
+        w = 17
+        for v in range(nv):
+            for kk in ("l1", "dir", "dma"):
+                if kk not in by_kind_router:
+                    continue
+                cells, served, active = {}, 0, 0
+                for r in range(a_rows):
+                    for c in range(a_cols):
+                        rid = r * cols + c
+                        ids = [n for n in by_kind_router[kk].get(rid, [])
+                               if (gv(nis[n], "idle_cycles", v)
+                                   + gv(nis[n], "xfer_cycles", v)
+                                   + gv(nis[n], "busy_cycles", v)) > 0]
+                        if not ids:
+                            continue
+                        served += 1
+                        x = sum(gv(nis[n], "xfer_cycles", v) for n in ids)
+                        b = sum(gv(nis[n], "busy_cycles", v) for n in ids)
+                        i = sum(gv(nis[n], "idle_cycles", v) for n in ids)
+                        tot = x + b + i
+                        if x + b > 0:
+                            active += 1
+                        cells[(r, c)] = (100*x/tot, 100*b/tot, 100*i/tot)
+                if not served:
+                    continue                    # this kind has no door here
+                if not active:
+                    print(f"  vnet{v} {kind_disp[kk]} doors: all idle "
+                          f"(no injection on this vnet)")
+                    continue
+                # 3-space column gap (1 + 2 requested) between matrix cells
+                print(f"  vnet{v} {kind_disp[kk]} doors ({active}/{served} "
+                      f"active), cell = XFER/BUSY/IDLE % of served cycles:")
+                print("        " + "   ".join(f"{c:>{w}}" for c in range(a_cols)))
+                for r in range(a_rows):
+                    row = []
+                    for c in range(a_cols):
+                        cell = cells.get((r, c))
+                        row.append("-".center(w) if cell is None else
+                                   f"{cell[0]:5.1f}/{cell[1]:5.1f}/{cell[2]:5.1f}")
+                    print(f"  {r}     " + "   ".join(row))
+            print()                     # blank line between vnets
+        # network-wide aggregate over ACTIVE doors only (xfer or busy > 0):
+        # structurally idle doors would dilute the percentages
+        agg = {k: [sum(gv(s, k, v) for s in nis.values()) for v in range(nv)]
+               for k in ("idle_cycles", "xfer_cycles", "busy_cycles",
+                         "backlog_msgs")}
+        for v in range(nv):
+            active = [ni for ni, s in nis.items()
+                      if gv(s, "xfer_cycles", v) + gv(s, "busy_cycles", v) > 0]
+            if not active:
+                continue
+            idle = sum(gv(nis[ni], "idle_cycles", v) for ni in active)
+            xfer = sum(gv(nis[ni], "xfer_cycles", v) for ni in active)
+            busy = sum(gv(nis[ni], "busy_cycles", v) for ni in active)
+            bkl = sum(gv(nis[ni], "backlog_msgs", v) for ni in active)
+            tot = idle + xfer + busy
+            print(f"  vnet{v} aggregate ({len(active)} active doors): "
+                  f"IDLE {100*idle/tot:6.2f}%  XFER {100*xfer/tot:6.2f}%  "
+                  f"BUSY {100*busy/tot:6.2f}%   avg backlog {bkl/tot:.3f} msg/cyc")
+        pinj = totals.get("packets_injected_vnet")
+        if pinj:
+            xsum = [agg["xfer_cycles"][v] for v in range(nv)]
+            ok = all(abs(a - (b or 0)) <= 1 for a, b in zip(xsum, pinj))
+            print(f"  cross-check sum(XFER) vs packets_injected per vnet: "
+                  f"{[int(x) for x in xsum]} vs "
+                  f"{[int(b or 0) for b in pinj]} -> "
+                  f"{'MATCH' if ok else 'MISMATCH'}")
+        hot = sorted(((100.0 * gv(s, "busy_cycles", v) / cycles, ni, v)
+                      for ni, s in nis.items() for v in range(nv)),
+                     reverse=True)[:5]
+        hot = [h for h in hot if h[0] > 0]
+        if hot:
+            print("  top BUSY (NoC refusing at the injection door):")
+            for pct, ni, v in hot:
+                print(f"    NI{ni} ({who(ni)}) vnet{v}: BUSY {pct:6.2f}%  "
+                      f"XFER {100.0 * gv(nis[ni], 'xfer_cycles', v) / cycles:6.2f}%")
+        else:
+            print("  no BUSY cycles: the network never refused an injection "
+                  "(below saturation at the door)")
+        bkl = sorted(((gv(s, "backlog_msgs", v) / cycles, ni, v)
+                      for ni, s in nis.items() for v in range(nv)),
+                     reverse=True)[:3]
+        bkl = [b for b in bkl if b[0] >= 0.01]
+        if bkl:
+            print("  top NI-side serialization backlog (msgs pending beyond "
+                  "the head):")
+            for bpc, ni, v in bkl:
+                print(f"    NI{ni} ({who(ni)}) vnet{v}: avg {bpc:.3f} msg/cyc pending")
+        print()
 
     # --- internal link flit load -------------------------------------------
     lf = route_flits(data, fpp_data, rows, cols)

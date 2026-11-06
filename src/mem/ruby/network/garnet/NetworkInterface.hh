@@ -36,6 +36,7 @@
 #include <iostream>
 #include <vector>
 
+#include "base/statistics.hh"
 #include "mem/ruby/common/Consumer.hh"
 #include "mem/ruby/network/garnet/CommonTypes.hh"
 #include "mem/ruby/network/garnet/Credit.hh"
@@ -74,6 +75,10 @@ class NetworkInterface : public ClockedObject, public Consumer
     void wakeup();
     void addNode(std::vector<MessageBuffer *> &inNode,
                  std::vector<MessageBuffer *> &outNode);
+
+    void regStats() override;
+    void resetStats() override;
+    void collateStats();   // via the statistics dump callback
 
     void print(std::ostream& out) const;
     int get_vnet(int vc);
@@ -290,6 +295,45 @@ class NetworkInterface : public ClockedObject, public Consumer
     std::vector<MessageBuffer *> inNode_ptr;
     // The Message buffers that provides messages to the protocol
     std::vector<MessageBuffer *> outNode_ptr;
+
+    // --- src-NI boundary-state accounting (this fork) -----------------
+    // Cycle partition of the protocol->network door, per (NI, vnet).
+    // The three states are exclusive per cycle:
+    //   IDLE : no message ready (incl. the cycles the NI slept between
+    //          wakeups - MessageBuffer::enqueue schedules this NI exactly
+    //          when a message becomes ready, so a dormant gap guarantees
+    //          no message was ready in those cycles)
+    //   XFER : head message accepted into the network (free out VC found)
+    //   BUSY : head message present but REFUSED - no free out VC, i.e.
+    //          credit-starvation backpressure from the network. Sustained
+    //          BUSY% > 0 at an NI = the network is saturated at this
+    //          injection boundary (first saturation probe).
+    // backlog: messages waiting beyond the head, summed over wakeups with
+    //          occupancy > 1. The NI serves 1 msg/cycle/vnet, so a deep
+    //          backlog with BUSY ~ 0 = NI-side serialization limit (e.g. a
+    //          response funnel), NOT network refusal. Little's law ties it
+    //          to the src-queueing part of the flit lifetime:
+    //          occupancy = injection_rate x src_queueing_delay.
+    // Registered views of the boundary counters (filled by collateStats,
+    // which runs before every statistics dump).
+    statistics::Vector m_src_idle_cycles;
+    statistics::Vector m_src_xfer_cycles;
+    statistics::Vector m_src_busy_cycles;
+    statistics::Vector m_src_backlog_msgs;
+    // Working counters incremented in wakeup() (plain members, following
+    // the SwitchAllocator/Router collateStats pattern); zeroed by
+    // resetStats().
+    std::vector<uint64_t> m_src_idle;
+    std::vector<uint64_t> m_src_xfer;
+    std::vector<uint64_t> m_src_busy;
+    std::vector<uint64_t> m_src_backlog;
+    // network cycle of the previous wakeup; -1 = none yet. The cycle it
+    // marks is already accounted, so gaps are (now - last - 1) and the
+    // partition idle+xfer+busy covers every cycle from 0.
+    int64_t m_last_src_wakeup_cycle;
+    // trailing dormant stretch already folded into m_src_idle by
+    // collateStats (idempotent across multiple stats dumps)
+    int64_t m_src_tail_accounted;
     // When a vc stays busy for a long time, it indicates a deadlock
     std::vector<int> vc_busy_counter;
 

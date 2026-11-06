@@ -94,7 +94,7 @@ Everything outside the network is intentionally ideal or minimal:
 | `configs/ruby/AIGCIC_NOC.py` | controller creation, sequencer/TBE params, 4-vnet wiring |
 | `configs/example/aigcic_noc_synth_traffic.py` | the only valid driver for AIGCIC_NOC; sets all defaults; **aborts on any non-`NULL_AIGCIC_NOC` build** |
 | `configs/ruby/Ruby.py` | `setup_memory_controllers` (ideal-DRAM hook), `create_directories` (dir TBE size) — shared with legacy protocols, gate AIGCIC changes by protocol |
-| `src/mem/ruby/network/garnet/` | instrumented stats (router residence, flit lifetime, network-part quantiles) |
+| `src/mem/ruby/network/garnet/` | instrumented stats (router residence, flit lifetime, network-part quantiles; src-NI door states `ni_src_{idle,xfer,busy}_cycles` + `ni_src_backlog_msgs` per (NI, vnet) — BUSY = no free out VC = credit backpressure, the saturation-at-the-door probe; idle+xfer+busy = run cycles ±1; analyzed FIRST in the report as per-router XFER/BUSY/IDLE matrices (one per vnet × controller kind, active-door aggregate + top-BUSY/backlog lists follow) |
 | `src/mem/ruby/network/Network.cc` | flit-sizing rule (see above) |
 | `perf_analysis/analyze_mesh_bw.py` | `stats.txt` → per-router bandwidth/latency report |
 | `traffic_tables/ai/` | AI-workload traffic tables (ring/TP/PP all-reduce, MoE all-to-all, LLaMA-3 4D composite, prefill-decode KV transfer) for `--synthetic=table`; generator + scenario docs (`README.md`, 中文); reference runs in `log/aigcic_noc/ai_workloads/` |

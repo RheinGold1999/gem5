@@ -632,6 +632,12 @@ GarnetNetwork::collateStats()
         m_routers[i]->collateStats();
     }
 
+    // Ask the network interfaces to collate their statistics (src-NI
+    // boundary-state counters)
+    for (int i = 0; i < m_nis.size(); i++) {
+        m_nis[i]->collateStats();
+    }
+
     // Whole-lifetime distribution of the delivered flits (see
     // NetworkInterface::incrementStats): median / p75 / max, in ticks.
     std::vector<uint32_t>& s = m_flit_lifetime_samples;
