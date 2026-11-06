@@ -46,6 +46,7 @@
 #include "mem/ruby/network/garnet/NetworkInterface.hh"
 #include "mem/ruby/network/garnet/NetworkLink.hh"
 #include "mem/ruby/network/garnet/Router.hh"
+#include "mem/ruby/slicc_interface/Message.hh"
 #include "mem/ruby/system/RubySystem.hh"
 
 namespace gem5
@@ -675,16 +676,29 @@ GarnetNetwork::print(std::ostream& out) const
 }
 
 void
-GarnetNetwork::update_traffic_distribution(RouteInfo route)
+GarnetNetwork::update_traffic_distribution(RouteInfo route, Message *msg)
 {
     int src_node = route.src_router;
     int dest_node = route.dest_router;
-    int vnet = route.vnet;
 
-    if (m_vnet_type[vnet] == DATA_VNET_)
+    // Split by MESSAGE CLASS, not by vnet type: the class is what the NI
+    // actually sizes (data categories carry the burst payload and grow to
+    // ceil(DataLength / flit_size) flits, control categories stay one flit).
+    // For AIGCIC_NOC burst runs this keeps the data class (PUTX + DATA)
+    // uniformly burst-sized and the ctrl class (GETX + WB_ACK) uniformly
+    // one flit, so the analyzer's two-size model stays exact.
+    switch (msg->getMessageSize()) {
+      case MessageSizeType_Data:
+      case MessageSizeType_Response_Data:
+      case MessageSizeType_ResponseLocal_Data:
+      case MessageSizeType_ResponseL2hit_Data:
+      case MessageSizeType_Writeback_Data:
         (*m_data_traffic_distribution[src_node][dest_node])++;
-    else
+        break;
+      default:
         (*m_ctrl_traffic_distribution[src_node][dest_node])++;
+        break;
+    }
 }
 
 bool

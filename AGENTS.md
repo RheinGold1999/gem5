@@ -39,6 +39,23 @@ Everything outside the network is intentionally ideal or minimal:
   payload`, header **not** counted) so burst flits =
   `ceil(data_length / 128 B)`. This is global — other protocols (e.g.
   `X86_MI_example`) get the same semantics if rebuilt.
+* **Burst transactions** (`--burst-size=<bytes>`, default 0 = off): a
+  NoC-level burst stamped on every synthetic request. Verified flit
+  counts at B=2048/128 B flits: write PUTX 16, WB_ACK 1, read GETX 1,
+  read DATA 16 (same for the cross-die vnets 1/3). Mechanism:
+  tester `extraData` → `Sequencer::issueRequest` stamps
+  `RubyRequest.BurstSize` → the L1 .sm copies it to `RequestMsg.DataLength`
+  (GETX: size only rides along; PUTX: sizes the message) → dir carries it
+  through `MemoryMsg.BurstLength` → `ResponseMsg.DataLength` on the DATA
+  reply. The NI (`flitisizeMessage`) sizes **only data-class**
+  MessageSizeTypes by `DataLength` — control categories are never
+  enlarged (a burst GETX must stay 1 flit). Gotchas:
+  `AbstractController::recvTimingResp` REBUILDS the response MemoryMsg,
+  so the burst survives the memory round trip only via
+  `SenderState::burstLength` (added); and the traffic-distribution
+  stats split by message class (not vnet type) so the analyzer's
+  two-size model stays exact for burst runs (auto-detected via
+  `burst_size=` in config.ini).
 * **data size default 128 B** with `cacheline_size=128` (they must move
   together: `data_msg_size <= cacheline_size` is fatal-checked).
 * **Logical 4x6 mesh on a 4x8 fabric**: `num_dirs` must stay a power of

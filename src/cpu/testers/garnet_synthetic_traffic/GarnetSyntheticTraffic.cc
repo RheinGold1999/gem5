@@ -83,6 +83,7 @@ GarnetSyntheticTraffic::GarnetSyntheticTraffic(const Params &p)
       cachePort("GarnetSyntheticTraffic", this),
       retryPkt(NULL),
       size(p.memory_size),
+      burstSize(p.burst_size),
       blockSizeBits(p.block_offset),
       destShift(p.dest_shift),
       mpuId(p.mpu_id),
@@ -487,6 +488,14 @@ GarnetSyntheticTraffic::generatePkt()
                                     requestorId);
 
     req->setContext(id);
+
+    // Optional network burst size: the functional access stays one byte
+    // (the protocol's block size and data payload are untouched); only
+    // the on-NoC message length grows, so the NI emits ceil(burst/128)
+    // flits for this request and for the matching data reply.
+    if (burstSize > 0) {
+        req->setExtraData(burstSize);
+    }
 
     //No need to do functional simulation
     //We just do timing simulation of the network

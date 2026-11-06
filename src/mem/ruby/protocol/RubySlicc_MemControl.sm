@@ -70,6 +70,10 @@ structure(MemoryMsg, desc="...", interface="Message") {
   DataBlock DataBlk,            desc="Data to writeback";
   MessageSizeType MessageSize,  desc="size category of the message";
   int Len,                      desc="size of the memory/dma request";
+  // Network payload bytes for the reply this request will produce
+  // (0 = network default). Distinct from Len: Len sizes the memory
+  // access, this only sizes the on-NoC message.
+  int BurstLength,              desc="network payload bytes (0 = default)";
   // Not all fields used by all protocols:
   PrefetchBit Prefetch,         desc="Is this a prefetch request";
   bool ReadX,                   desc="Exclusive";

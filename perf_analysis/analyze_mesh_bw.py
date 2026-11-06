@@ -222,6 +222,11 @@ def read_config(path):
                      ctrl pkt flits = ceil(control_msg_size / ni_flit_size)
                    e.g. 64B or 128B data at 1024-bit links -> 1 flit.
                    None if not found.
+      burst_size   burst_size= of the GarnetSyntheticTraffic testers
+                   (--burst-size, 0 = off). When > 0 every data-class
+                   message (PUTX + DATA in AIGCIC_NOC) carries
+                   ceil(burst_size / ni_flit_size) flits instead, which
+                   overrides the data_msg_size-derived count.
 
     Returns a dict with these keys; count keys stay 0 if absent.
     """
@@ -230,12 +235,13 @@ def read_config(path):
            "active_cols": None, "active_rows": None, "protocol": None,
            "ext_map": {}, "buf_dir": {},
            "data_msg_size": None, "control_msg_size": None,
-           "ni_flit_size": None}
+           "ni_flit_size": None, "burst_size": None}
     if not os.path.exists(path):
         return cfg
     in_network = False
     in_ruby_clk = False
     in_tester = False          # inside a [system.cpu*] GarnetSyntheticTraffic section
+    cur_is_tester = False      # current [section] is a cpu/tester section
     cur_ext = None             # controller name of the ext_links section being read
     cur_buf = None             # (controller, buffer) of the MessageBuffer section
     with open(path) as f:
@@ -254,6 +260,7 @@ def read_config(path):
                 mb = re.match(r"^\[system\.ruby\.(\w+)\.(\w+)\]$", line)
                 cur_buf = (mb.group(1), mb.group(2)) if mb else None
                 in_tester = re.match(r"^\[system\.cpu[0-9]+\]$", line) is not None
+                cur_is_tester = in_tester
                 continue
             # MessageBuffer port wiring -> authoritative OUT/IN direction
             if cur_buf is not None:
@@ -276,6 +283,12 @@ def read_config(path):
             if re.match(r"^\s*type=GarnetSyntheticTraffic\b", line):
                 cfg["num_injectors"] += 1
                 in_tester = False          # type= line counts the section once
+            # Tester burst size (AIGCIC_NOC --burst-size): every data-class
+            # message carries ceil(burst/flit) flits (see read_config docs).
+            if cur_is_tester:
+                m = re.match(r"^\s*burst_size=(\d+)", line)
+                if m and cfg["burst_size"] is None:
+                    cfg["burst_size"] = int(m.group(1))
             # Protocol family: from the Ruby controller class names in
             # config.ini, e.g. type=MI_example_Directory_Controller or
             # type=Garnet_standalone_L1Cache_Controller. This decides how many
@@ -465,10 +478,12 @@ def main():
                     help="mesh rows; auto-read from config.ini (network.num_rows) "
                          "if omitted. cols is derived from the router count.")
     ap.add_argument("--flits-per-data-pkt", type=int, default=None,
-                    help="flits per DATA-vnet packet; auto from config.ini as "
-                         "ceil(data_msg_size/ni_flit_size) "
-                         "if omitted (e.g. 1 for the --data-msg-size=8 runs, 5 "
-                         "for the default 64B payload).")
+                    help="flits per DATA-class packet (PUTX/DATA in "
+                         "AIGCIC_NOC); auto from config.ini as "
+                         "ceil(data_msg_size/ni_flit_size), or "
+                         "ceil(burst_size/ni_flit_size) for --burst-size "
+                         "runs (e.g. 16 for --burst-size=2048 at 128 B "
+                         "flits), 1 for the default 128B payload.")
     ap.add_argument("--flits-per-ctrl-pkt", type=int, default=None,
                     help="flits per CTRL-vnet packet; auto from config.ini as "
                          "ceil(control_msg_size/ni_flit_size) if omitted "
@@ -601,9 +616,24 @@ def run_analysis(stats_path, args):
         if d is not None and cm is not None and fs:
             auto_data = -(-d // fs)             # ceil, integer-only
             auto_ctrl = -(-cm // fs)
+            # --burst-size runs: the testers stamp a burst payload into
+            # every request, and every data-class message (PUTX + DATA)
+            # then carries ceil(burst/flit) flits. Ctrl-class messages
+            # (GETX / WB_ACK) stay one flit. This needs the message-class
+            # (not vnet-type) traffic split the network writes since the
+            # burst support (update_traffic_distribution).
+            if cfg["burst_size"]:
+                if cfg["ni_flit_size"]:
+                    auto_data = -(-cfg["burst_size"] // cfg["ni_flit_size"])
+                else:
+                    sys.exit("burst_size=%d in config.ini but no "
+                             "ni_flit_size; pass --flits-per-data-pkt"
+                             % cfg["burst_size"])
+                sizing_src.append("burst=%dB" % cfg["burst_size"])
             if fpp_data is None:
                 fpp_data = auto_data
-                sizing_src.append(f"data={auto_data} flits ceil({d}/{fs})")
+                if not cfg["burst_size"]:
+                    sizing_src.append(f"data={auto_data} flits ceil({d}/{fs})")
             if fpp_ctrl is None:
                 fpp_ctrl = auto_ctrl
                 sizing_src.append(f"ctrl={auto_ctrl} flits ceil({cm}/{fs})")

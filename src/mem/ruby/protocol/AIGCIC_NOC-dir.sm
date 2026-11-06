@@ -262,6 +262,8 @@ machine(MachineType:Directory, "AIGCIC NoC DRAM controller agent")
         out_msg.Destination.add(in_msg.OriginalRequestorMachId);
         out_msg.DataBlk := in_msg.DataBlk;
         out_msg.MessageSize := MessageSizeType:Response_Data;
+        // Carry the request's burst size through to the DATA reply.
+        out_msg.DataLength := in_msg.BurstLength;
       }
     }
   }
@@ -316,6 +318,9 @@ machine(MachineType:Directory, "AIGCIC NoC DRAM controller agent")
         out_msg.Sender := in_msg.Requestor;
         out_msg.MessageSize := MessageSizeType:Request_Control;
         out_msg.Len := 0;
+        // Network burst size for the DATA reply; Len stays 0 so the
+        // memory access itself remains one cache line.
+        out_msg.BurstLength := in_msg.DataLength;
       }
     }
   }
@@ -337,6 +342,7 @@ machine(MachineType:Directory, "AIGCIC NoC DRAM controller agent")
         out_msg.Sender := machineID;
         out_msg.Destination.add(in_msg.Requestor);
         out_msg.MessageSize := MessageSizeType:Response_Data;
+        out_msg.DataLength := in_msg.DataLength;
       }
     }
   }

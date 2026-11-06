@@ -467,6 +467,12 @@ class AbstractController : public ClockedObject, public Consumer
         // the memory response inherits the same transaction id.
         uint64_t msgId = 0;
 
+        // Network burst payload (AIGCIC_NOC) carried by the MemoryMsg
+        // that generated this packet, so the memory response can carry
+        // it back to the protocol (the response MemoryMsg is rebuilt
+        // from scratch in recvTimingResp). 0 = network default size.
+        int burstLength = 0;
+
         SenderState(MachineID _id) : id(_id)
         {}
     };

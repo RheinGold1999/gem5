@@ -67,6 +67,10 @@ class RubyRequest : public Message
     Addr m_ProgramCounter;
     RubyAccessMode m_AccessMode;
     int m_Size;
+    // Network burst payload in bytes carried by this request (0 = use
+    // the network's default data size). Kept separate from m_Size so a
+    // multi-flit burst does not change the functional access size.
+    int m_BurstSize = 0;
     PrefetchBit m_Prefetch;
     PacketPtr m_pkt;
     ContextID m_contextId;
@@ -241,6 +245,8 @@ class RubyRequest : public Message
     Addr getProgramCounter() const { return m_ProgramCounter; }
     const RubyAccessMode& getAccessMode() const { return m_AccessMode; }
     const int& getSize() const { return m_Size; }
+    const int& getBurstSize() const { return m_BurstSize; }
+    void setBurstSize(int burst_size) { m_BurstSize = burst_size; }
     const PrefetchBit& getPrefetch() const { return m_Prefetch; }
     RequestPtr getRequestPtr() const { return m_pkt->req; }
 

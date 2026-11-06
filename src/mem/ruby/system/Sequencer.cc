@@ -1155,6 +1155,13 @@ Sequencer::issueRequest(PacketPtr pkt, RubyRequestType secondary_type)
             msg->setWriteMask(offset, pkt->getSize(), atomicOps);
         }
 
+        // Optional network burst size: the synthetic tester stamps the
+        // requested burst into the request's extra data. 0 keeps the
+        // protocol's default single-payload message.
+        if (pkt->req->extraDataValid()) {
+            msg->setBurstSize(pkt->req->getExtraData());
+        }
+
         DPRINTFR(ProtocolTrace, "%15s %3s %10s%20s %6s>%-6s %#x %s\n",
                 curTick(), m_version, "Seq", "Begin", "", "",
                 printAddress(msg->getPhysicalAddress()),

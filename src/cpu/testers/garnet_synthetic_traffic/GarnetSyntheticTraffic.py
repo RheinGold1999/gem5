@@ -60,6 +60,14 @@ class GarnetSyntheticTraffic(ClockedObject):
         "above the block offset.",
     )
     num_dest = Param.Int(1, "Number of Destinations")
+    burst_size = Param.Unsigned(
+        0,
+        "Network burst payload in bytes stamped on each request (0 = "
+        "protocol default, i.e. one data message flit at the default "
+        "data-msg-size). The functional access size stays 1 byte; only "
+        "the on-NoC message length changes, so a 2048 here makes a write "
+        "PUTX 16 flits and a read DATA reply 16 flits with 128 B links.",
+    )
     lines_per_dest = Param.Int(
         1,
         "Number of distinct cache lines used per destination. The random "

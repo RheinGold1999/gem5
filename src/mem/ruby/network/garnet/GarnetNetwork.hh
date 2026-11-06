@@ -48,6 +48,7 @@ namespace ruby
 
 class FaultModel;
 class NetDest;
+class Message;
 
 namespace garnet
 {
@@ -180,7 +181,8 @@ class GarnetNetwork : public Network
         m_total_hops += hops;
     }
 
-    void update_traffic_distribution(RouteInfo route);
+    void update_traffic_distribution(RouteInfo route,
+                                     ::gem5::ruby::Message *msg);
     int getNextPacketID() { return m_next_packet_id++; }
 
   protected:

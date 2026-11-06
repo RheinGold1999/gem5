@@ -117,6 +117,9 @@ class GarnetSyntheticTraffic : public ClockedObject
 
     PacketPtr retryPkt;
     unsigned size;
+    // Network burst payload in bytes stamped on each request (0 = the
+    // network's default data-message size).
+    unsigned burstSize;
     int id;
 
     std::map<std::string, TrafficType> trafficStringToEnum;

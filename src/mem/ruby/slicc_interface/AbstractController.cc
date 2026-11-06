@@ -296,6 +296,9 @@ AbstractController::serviceMemoryQueue()
 
     SenderState *s = new SenderState(mem_msg->m_Sender);
     s->msgId = mem_msg->getMsgId();
+    // Keep the burst size with the packet: the response MemoryMsg is
+    // rebuilt in recvTimingResp and would otherwise lose it.
+    s->burstLength = mem_msg->m_BurstLength;
     pkt->pushSenderState(s);
 
     if (m_ruby_system->getWarmupEnabled()) {
@@ -396,6 +399,7 @@ AbstractController::recvTimingResp(PacketPtr pkt)
     SenderState *s = dynamic_cast<SenderState *>(pkt->senderState);
     (*msg).m_OriginalRequestorMachId = s->id;
     (*msg).setMsgId(s->msgId);
+    (*msg).m_BurstLength = s->burstLength;
     delete s;
 
     if (pkt->isRead()) {

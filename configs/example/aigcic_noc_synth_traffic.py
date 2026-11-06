@@ -236,6 +236,19 @@ parser.add_argument(
 )
 
 parser.add_argument(
+    "--burst-size",
+    type=int,
+    default=0,
+    help="Network burst payload in bytes stamped on every synthetic "
+         "request (0 = protocol default, one data message at "
+         "--data-msg-size). A burst is sized per message, not globally: "
+         "a write PUTX carries ceil(burst/flit) flits and its WB_ACK one "
+         "control flit; a read GETX is one control flit and its DATA "
+         "reply ceil(burst/flit) flits. E.g. --burst-size 2048 with "
+         "--link-width-bits 1024 (128 B flits) gives 16-flit write "
+         "requests and 16-flit read replies, 1-flit read requests/acks.",
+)
+parser.add_argument(
     "--data-msg-size",
     type=int,
     default=64,
@@ -575,6 +588,7 @@ cpus = [
         inj_rate=args.injectionrate,
         traffic_table=args.traffic_table or "",
         traffic_read_ratio=args.traffic_read_ratio,
+        burst_size=args.burst_size,
         inj_vnet=args.inj_vnet,
         precision=args.precision,
         num_dest=args.num_dirs,

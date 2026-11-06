@@ -66,8 +66,31 @@ vnet0/vnet2 only; results in section 6.4).
 * Burst: payloads larger than one flit occupy
   `ceil(data_length / 1024 bits)` flits. The message header is **not**
   counted (see `Network::Network` in `src/mem/ruby/network/Network.cc`).
+* **Burst transactions** (`--burst-size=<bytes>`, default 0 = off):
+  stamps a burst payload onto every synthetic request at the NoC level
+  only — the functional access and the Ruby line size stay untouched
+  (no address-encoding changes). Per transaction (B = burst bytes,
+  F = flit bytes = `--link-width-bits/8`):
 
-Burst runs must raise the Ruby line size together with the payload, e.g.
+  | message | class | flits |
+  |---|---|---|
+  | write PUTX | data | `ceil(B / F)` (e.g. **16** for B=2048) |
+  | write WB_ACK | ctrl | **1** |
+  | read GETX | ctrl | **1** (the burst size rides along for the dir) |
+  | read DATA | data | `ceil(B / F)` (e.g. **16** for B=2048) |
+
+  The burst size travels as a `DataLength` field on the protocol
+  messages (`RequestMsg`/`ResponseMsg`/`MemoryMsg`) and through the
+  memory round trip (`AbstractController::SenderState`); the NI sizes
+  **only data-class** messages by `DataLength` — control categories are
+  never enlarged (see `NetworkInterface::flitisizeMessage`). Works for
+  internal-die and cross-die traffic alike (vnet0/2 and vnet1/3). The
+  traffic-distribution stats split by message class, so the analyzer
+  auto-detects burst runs (`data` class = PUTX + DATA at
+  `ceil(B/F)` flits, `ctrl` class = GETX + WB_ACK at 1).
+
+Legacy alternative (changes the line size and the address encoding —
+prefer `--burst-size`):
 
 ```bash
 --cacheline_size=1024 --data-msg-size=1024
@@ -149,6 +172,27 @@ Ruby-sequencer side (set in `configs/ruby/AIGCIC_NOC.py`, not CLI):
 
 ### 3.3 Burst-traffic example
 
+The recommended way — `--burst-size` sizes the NoC messages without
+touching the line size or the address encoding:
+
+```bash
+./build/NULL_AIGCIC_NOC/gem5.opt -d log/aigcic_noc/burst/write2048 \
+    configs/example/aigcic_noc_synth_traffic.py \
+    --synthetic=uniform_random --injectionrate=0.10 \
+    --sim-cycles=500000000 \
+    --burst-size=2048 --traffic-read-ratio=0.0
+```
+
+A write PUTX then occupies `ceil(2048 B / 128 B) = 16` flits and its
+WB_ACK 1 flit; a read GETX is 1 flit and its DATA reply 16 flits
+(`--traffic-read-ratio` picks the mix). Note the injection unit is one
+**transaction** per node, so a burst transaction also occupies the
+injection door for 16 cycles — derate `--injectionrate` accordingly
+(0.1 burst ≈ 1.6 flit/cycle/node offered load).
+
+Legacy alternative (raises the Ruby line size; changes the address
+encoding — hence `--xor-low-bit=0` here):
+
 ```bash
 ./build/NULL_AIGCIC_NOC/gem5.opt -d log/aigcic_noc/mesh_4x6/burst_1k \
     configs/example/aigcic_noc_synth_traffic.py \
@@ -157,10 +201,7 @@ Ruby-sequencer side (set in `configs/ruby/AIGCIC_NOC.py`, not CLI):
     --cacheline_size=1024 --data-msg-size=1024 --xor-low-bit=0
 ```
 
-DATA responses then occupy `ceil(1024 B / 128 B) = 8` flits. Note that
-raising the line size changes the address encoding; with 1024 B lines the
-default `--xor-low-bit` no longer fits, hence `--xor-low-bit=0` (no XOR
-hashing) in this example.
+DATA responses then occupy `ceil(1024 B / 128 B) = 8` flits.
 
 ### 3.4 Full-fabric (no masking) example
 
@@ -284,6 +325,8 @@ legacy baseline within noise.
 | `--injectionrate` | packets/cycle/node (0..1) |
 | `--sim-cycles` | simulation length in **ticks** (see note above) |
 | `--data-msg-size` (+ `--cacheline_size`) | data payload bytes; flits = `ceil(payload / flit_size)` |
+| `--burst-size` | NoC-level burst payload (0 = off): write PUTX / read DATA = `ceil(burst/flit)` flits, read GETX / WB_ACK = 1 flit; line size and address encoding untouched |
+| `--burst-size` | 0 (off) | NoC-level burst payload in bytes stamped on every synthetic request: write PUTX and read DATA replies occupy `ceil(burst / flit)` flits, read GETX and WB_ACK stay 1 flit. The functional access / line size / address encoding are untouched (see §1.3) |
 | `--link-width-bits` | flit size in bits (default 1024) |
 | `--num-active-columns` / `--num-active-rows` | restrict traffic to the top-left `rows x cols` sub-mesh; 0 = full fabric |
 | `--inj-vnet` | retired for request-type selection (was: 0 = request internal-die, 2 = response). The read/write mix now comes from `--traffic-read-ratio` / the table's `rw` column; AIGCIC vnets are address-driven (`--cross-die-ratio`), not chosen by this knob |

@@ -344,12 +344,17 @@ machine(MachineType:L1Cache, "AIGCIC NoC L1 Cache")
   // ACTIONS
 
   action(a_issueRequest, "a", desc="Issue a request") {
-    enqueue(requestNetwork_out, RequestMsg, issue_latency) {
-    out_msg.addr := address;
-      out_msg.Type := CoherenceRequestType:GETX;
-      out_msg.Requestor := machineID;
-      out_msg.Destination.add(mapAddressToMachine(address, MachineType:Directory));
-      out_msg.MessageSize := MessageSizeType:Control;
+    peek(mandatoryQueue_in, RubyRequest) {
+      enqueue(requestNetwork_out, RequestMsg, issue_latency) {
+      out_msg.addr := address;
+        out_msg.Type := CoherenceRequestType:GETX;
+        out_msg.Requestor := machineID;
+        out_msg.Destination.add(mapAddressToMachine(address, MachineType:Directory));
+        out_msg.MessageSize := MessageSizeType:Control;
+        // The read request itself is one control flit; the size rides
+        // along so the directory can size the DATA response.
+        out_msg.DataLength := in_msg.BurstSize;
+      }
     }
   }
 
@@ -362,6 +367,7 @@ machine(MachineType:L1Cache, "AIGCIC NoC L1 Cache")
       out_msg.Destination.add(mapAddressToMachine(address, MachineType:Directory));
       out_msg.DataBlk := cache_entry.DataBlk;
       out_msg.MessageSize := MessageSizeType:Data;
+      out_msg.DataLength := 0;
     }
   }
 
@@ -372,13 +378,16 @@ machine(MachineType:L1Cache, "AIGCIC NoC L1 Cache")
   // proxies the remote die's memory; the message itself keeps the full
   // address so the requestor and the dir still agree on the line.
   action(a_issueRequestXD, "ax", desc="Issue a cross-die GETX (vnet1)") {
-    enqueue(requestXDNetwork_out, RequestMsg, issue_latency) {
-      out_msg.addr := address;
-      out_msg.Type := CoherenceRequestType:GETX;
-      out_msg.Requestor := machineID;
-      out_msg.Destination.add(mapAddressToMachine(localDieAddr(address),
-                                                  MachineType:Directory));
-      out_msg.MessageSize := MessageSizeType:Control;
+    peek(mandatoryQueue_in, RubyRequest) {
+      enqueue(requestXDNetwork_out, RequestMsg, issue_latency) {
+        out_msg.addr := address;
+        out_msg.Type := CoherenceRequestType:GETX;
+        out_msg.Requestor := machineID;
+        out_msg.Destination.add(mapAddressToMachine(localDieAddr(address),
+                                                    MachineType:Directory));
+        out_msg.MessageSize := MessageSizeType:Control;
+        out_msg.DataLength := in_msg.BurstSize;
+      }
     }
   }
 
@@ -392,6 +401,7 @@ machine(MachineType:L1Cache, "AIGCIC NoC L1 Cache")
                                                   MachineType:Directory));
       out_msg.DataBlk := cache_entry.DataBlk;
       out_msg.MessageSize := MessageSizeType:Data;
+      out_msg.DataLength := 0;
     }
   }
 
@@ -401,23 +411,29 @@ machine(MachineType:L1Cache, "AIGCIC NoC L1 Cache")
   // PUTX (Data => 1 burst flit at the 128 B default), so a write costs
   // exactly PUTX + WB_ACK.
   action(bw_issuePUTWrite, "bw", desc="Issue a fire-and-forget write PUTX (no fetch, no line)") {
-    enqueue(requestNetwork_out, RequestMsg, issue_latency) {
-      out_msg.addr := address;
-      out_msg.Type := CoherenceRequestType:PUTX;
-      out_msg.Requestor := machineID;
-      out_msg.Destination.add(mapAddressToMachine(address, MachineType:Directory));
-      out_msg.MessageSize := MessageSizeType:Data;
+    peek(mandatoryQueue_in, RubyRequest) {
+      enqueue(requestNetwork_out, RequestMsg, issue_latency) {
+        out_msg.addr := address;
+        out_msg.Type := CoherenceRequestType:PUTX;
+        out_msg.Requestor := machineID;
+        out_msg.Destination.add(mapAddressToMachine(address, MachineType:Directory));
+        out_msg.MessageSize := MessageSizeType:Data;
+        out_msg.DataLength := in_msg.BurstSize;
+      }
     }
   }
 
   action(bwx_issuePUTWriteXD, "bwx", desc="Issue a cross-die fire-and-forget write PUTX (vnet1)") {
-    enqueue(requestXDNetwork_out, RequestMsg, issue_latency) {
-      out_msg.addr := address;
-      out_msg.Type := CoherenceRequestType:PUTX;
-      out_msg.Requestor := machineID;
-      out_msg.Destination.add(mapAddressToMachine(localDieAddr(address),
-                                                  MachineType:Directory));
-      out_msg.MessageSize := MessageSizeType:Data;
+    peek(mandatoryQueue_in, RubyRequest) {
+      enqueue(requestXDNetwork_out, RequestMsg, issue_latency) {
+        out_msg.addr := address;
+        out_msg.Type := CoherenceRequestType:PUTX;
+        out_msg.Requestor := machineID;
+        out_msg.Destination.add(mapAddressToMachine(localDieAddr(address),
+                                                    MachineType:Directory));
+        out_msg.MessageSize := MessageSizeType:Data;
+        out_msg.DataLength := in_msg.BurstSize;
+      }
     }
   }
 

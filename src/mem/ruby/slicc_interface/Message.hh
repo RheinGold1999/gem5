@@ -81,6 +81,15 @@ class Message
     virtual MessageSizeType& getMessageSize()
     { panic("MessageSizeType() called on wrong message!"); }
 
+    // Payload length in bytes carried by this message. 0 means "no
+    // per-message override": the network then uses the size implied by
+    // the message's MessageSizeType (data_msg_size for data categories).
+    // Protocols that support variable-size (burst) messages add a
+    // DataLength field to their message structures; the generated
+    // accessors override these defaults.
+    virtual const int& getDataLength() const { return m_default_data_length; }
+    virtual int& getDataLength() { return m_default_data_length; }
+
     /**
      * The two functions below are used for reading / writing the message
      * functionally. The methods return true if the address in the packet
@@ -145,6 +154,9 @@ class Message
 
   protected:
     int m_block_size = 0;
+    // Fallback used by getDataLength() for messages with no DataLength
+    // field (all protocols that do not model burst sizes).
+    int m_default_data_length = 0;
 
   private:
     Tick m_time;

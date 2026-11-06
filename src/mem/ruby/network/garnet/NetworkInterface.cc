@@ -397,12 +397,32 @@ NetworkInterface::flitisizeMessage(MsgPtr msg_ptr, int vnet)
     // This is expressed in terms of bytes/cycle or the flit size
     OutputPort *oPort = getOutportForVnet(vnet);
     assert(oPort);
-    int num_flits = (int)divCeil((float) m_net_ptr->MessageSizeType_to_int(
-        net_msg_ptr->getMessageSize()), (float)oPort->bitWidth());
+    // Payload bytes for this message.  A data-category message with an
+    // explicit DataLength (burst) overrides the size implied by
+    // MessageSizeType; 0 keeps the legacy behaviour (control_msg_size /
+    // data_msg_size).  Control categories never honour DataLength: a
+    // burst GETX carries the burst size only so the directory can size
+    // the DATA reply, and must itself stay one control flit.
+    uint32_t msg_bytes =
+        m_net_ptr->MessageSizeType_to_int(net_msg_ptr->getMessageSize());
+    const int data_length = net_msg_ptr->getDataLength();
+    switch (net_msg_ptr->getMessageSize()) {
+      case MessageSizeType_Data:
+      case MessageSizeType_Response_Data:
+      case MessageSizeType_ResponseLocal_Data:
+      case MessageSizeType_ResponseL2hit_Data:
+      case MessageSizeType_Writeback_Data:
+        if (data_length > 0) {
+            msg_bytes = (uint32_t)data_length;
+        }
+        break;
+      default:
+        break;
+    }
+    int num_flits = (int)divCeil((float)msg_bytes, (float)oPort->bitWidth());
 
-    DPRINTF(RubyNetwork, "Message Size:%d vnet:%d bitWidth:%d\n",
-        m_net_ptr->MessageSizeType_to_int(net_msg_ptr->getMessageSize()),
-        vnet, oPort->bitWidth());
+    DPRINTF(RubyNetwork, "Message Size:%d vnet:%d bitWidth:%d flits:%d\n",
+        msg_bytes, vnet, oPort->bitWidth(), num_flits);
 
     // loop to convert all multicast messages into unicast messages
     for (int ctr = 0; ctr < dest_nodes.size(); ctr++) {
@@ -458,7 +478,7 @@ NetworkInterface::flitisizeMessage(MsgPtr msg_ptr, int vnet)
         route.hops_traversed = -1;
 
         m_net_ptr->increment_injected_packets(vnet);
-        m_net_ptr->update_traffic_distribution(route);
+        m_net_ptr->update_traffic_distribution(route, new_net_msg_ptr);
         int packet_id = m_net_ptr->getNextPacketID();
         for (int i = 0; i < num_flits; i++) {
             m_net_ptr->increment_injected_flits(vnet);
