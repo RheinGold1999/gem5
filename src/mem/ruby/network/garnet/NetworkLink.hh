@@ -70,6 +70,10 @@ class NetworkLink : public ClockedObject, public Consumer
     flitBuffer *getBuffer() { return &linkBuffer;}
     virtual void wakeup();
 
+    // per-link transmitted-flit count (trace-replay reconciliation vs
+    // the trace's links.csv needs this per link, not just the total)
+    statistics::Scalar m_flit_count;
+
     unsigned int getLinkUtilization() const { return m_link_utilized; }
     const std::vector<unsigned int> & getVcLoad() const { return m_vc_load; }
 

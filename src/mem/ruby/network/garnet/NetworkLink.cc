@@ -35,6 +35,7 @@
 #include "base/trace.hh"
 #include "debug/RubyNetwork.hh"
 #include "mem/ruby/network/garnet/CreditLink.hh"
+#include "sim/stats.hh"
 
 namespace gem5
 {
@@ -52,6 +53,9 @@ NetworkLink::NetworkLink(const Params &p)
       m_virt_nets(p.virt_nets), linkBuffer(),
       link_consumer(nullptr), link_srcQueue(nullptr)
 {
+    m_flit_count
+        .name(name() + ".flits")
+        .desc("flits transmitted on this link");
     int num_vnets = (p.supported_vnets).size();
     mVnets.resize(num_vnets);
     bitWidth = p.width;
@@ -101,6 +105,7 @@ NetworkLink::wakeup()
         linkBuffer.insert(t_flit);
         link_consumer->scheduleEventAbsolute(clockEdge(m_latency));
         m_link_utilized++;
+        m_flit_count++;
         m_vc_load[t_flit->get_vc()]++;
     }
 

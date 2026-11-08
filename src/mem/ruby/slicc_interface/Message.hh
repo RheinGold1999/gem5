@@ -90,6 +90,14 @@ class Message
     virtual const int& getDataLength() const { return m_default_data_length; }
     virtual int& getDataLength() { return m_default_data_length; }
 
+    // Trace-replay record index carried by the message (see RouteInfo).
+    // -1 = not trace traffic. Protocols that support trace replay add a
+    // TraceId field to their message structures; the generated accessors
+    // override these defaults. The network reads it generically at
+    // flitization, so the base class needs the fallback.
+    virtual const int& getTraceId() const { return m_default_trace_id; }
+    virtual int& getTraceId() { return m_default_trace_id; }
+
     /**
      * The two functions below are used for reading / writing the message
      * functionally. The methods return true if the address in the packet
@@ -157,6 +165,8 @@ class Message
     // Fallback used by getDataLength() for messages with no DataLength
     // field (all protocols that do not model burst sizes).
     int m_default_data_length = 0;
+    // Fallback used by getTraceId() for messages with no TraceId field.
+    int m_default_trace_id = -1;
 
   private:
     Tick m_time;

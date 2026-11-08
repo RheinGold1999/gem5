@@ -70,6 +70,7 @@ parser.add_argument(
     choices=[
         "uniform_random",
         "table",
+        "trace",
         "tornado",
         "bit_complement",
         "bit_reverse",
@@ -78,6 +79,41 @@ parser.add_argument(
         "shuffle",
         "transpose",
     ],
+)
+
+parser.add_argument(
+    "--trace-plan",
+    default=None,
+    help="Compiled trace-replay plan for --synthetic=trace: the plan.txt "
+         "produced by tools/trace_plan/compile_trace_plan.py from a trace "
+         "window (e.g. traffic/trace/noc-trace-4x6/s1-layer-a/_plan/). "
+         "Each tester injects the records it owns; the network hook "
+         "relays bursts in-network; the scheduler owns the after/seq "
+         "causality and chains window repetitions (--trace-repeat).",
+)
+
+parser.add_argument(
+    "--trace-event-log",
+    metavar="PATH",
+    help="Optional per-record event log (ISSUE/ARRIVE/RELAY/TAP/LEG per "
+         "line) for msg-granularity reconciliation "
+         "(tools/trace_plan/reconcile_event_log.py).",
+)
+parser.add_argument(
+    "--trace-repeat",
+    type=int,
+    default=1,
+    help="How many times to replay the trace window (repetitions never "
+         "overlap: the next starts after every record of the previous one "
+         "reached arrival completion, plus --inter-layer-cycles)",
+)
+
+parser.add_argument(
+    "--inter-layer-cycles",
+    type=int,
+    default=0,
+    help="Idle gap (cycles) between window repetitions, modelling "
+         "inter-layer compute time",
 )
 
 parser.add_argument(
@@ -331,6 +367,23 @@ if args.synthetic == "table":
           "govern injection.")
 elif args.traffic_table:
     fatal("--traffic-table is only valid with --synthetic=table.")
+
+if args.synthetic == "trace":
+    if not args.trace_plan:
+        fatal("--synthetic=trace requires --trace-plan=<plan.txt>.")
+    if args.vcs_per_vnet < 2:
+        fatal("--synthetic=trace requires --vcs-per-vnet >= 2 (dateline "
+              "VC classes: 0 = first phase, 1 = post-bend).")
+    if args.addr_layout != "mpu52":
+        fatal("--synthetic=trace requires --addr-layout=mpu52 (relay "
+              "addresses target the per-node dir windows).")
+    if args.cross_die_ratio > 0:
+        fatal("--synthetic=trace does not model cross-die traffic.")
+    print("Trace replay mode: plan %s, repeat %d, inter-layer %d cycles; "
+          "--injectionrate is ignored."
+          % (args.trace_plan, args.trace_repeat, args.inter_layer_cycles))
+elif args.trace_plan:
+    fatal("--trace-plan is only valid with --synthetic=trace.")
 
 if not 0.0 <= args.traffic_read_ratio <= 1.0:
     fatal("--traffic-read-ratio %g outside [0, 1]."
@@ -598,6 +651,8 @@ cpus = [
         mpu_id=args.mpu_id,
         gpu_id=args.gpu_id,
         cross_die_ratio=args.cross_die_ratio,
+        trace_plan_file=args.trace_plan or "",
+        trace_router_id=(i if args.synthetic == "trace" else -1),
     )
     for i in range(args.num_cpus)
 ]
@@ -647,6 +702,21 @@ system.ruby.clk_domain = SrcClockDomain(
 # default 64 data packets are 5 flits; pass --data-msg-size 8 to make them
 # 1 flit (control packets are always 1 flit).
 system.ruby.network.data_msg_size = args.data_msg_size
+
+# Trace replay: wire the plan into the network and create the global
+# scheduler (created after the network so its init() sees the loaded plan).
+if args.synthetic == "trace":
+    system.ruby.network.trace_plan_file = args.trace_plan
+    system.trace_scheduler = TraceScheduler(
+        plan_file=args.trace_plan,
+        network=system.ruby.network,
+        testers=cpus,
+        repeat=args.trace_repeat,
+        inter_layer_cycles=args.inter_layer_cycles,
+        event_log=args.trace_event_log or "",
+        clk_domain=system.clk_domain,
+        voltage_domain=system.voltage_domain,
+    )
 
 i = 0
 for ruby_port in system.ruby._cpu_ports:

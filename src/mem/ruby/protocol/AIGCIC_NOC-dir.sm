@@ -57,14 +57,17 @@ machine(MachineType:Directory, "AIGCIC NoC DRAM controller agent")
       MessageBuffer * responseFromDir, network="To", virtual_network="2",
             vnet_type="response";
 
+      // vnet_type="response" (like the L1 side): all AIGCIC_NOC vnets are
+      // DATA_VNET_-typed for 4-flit buffers -- vnet0 carries the data
+      // bursts; the annotation only selects the buffer depth.
       MessageBuffer * requestToDir, network="From", virtual_network="0",
-            vnet_type="request";
+            vnet_type="response";
 
       // vnet1: request cross-die, vnet3: response cross-die
       // (path in place; unused until the address map routes cross-die
       // traffic to them)
       MessageBuffer * requestToDirXD, network="From", virtual_network="1",
-            vnet_type="request";
+            vnet_type="response";
 
       MessageBuffer * responseFromDirXD, network="To", virtual_network="3",
             vnet_type="response";
@@ -87,6 +90,7 @@ machine(MachineType:Directory, "AIGCIC NoC DRAM controller agent")
     // processor requests
     GETX, desc="A GETX (read-for-data) arrives (internal-die vnet0)";
     PUTX, desc="A PUTX (writeback) arrives (internal-die vnet0)";
+    RelayPut, desc="A RELAY_PUTX (trace-replay hop) arrives: drop silently";
     GETX_XD, desc="A GETX arrives (cross-die vnet1)";
     PUTX_XD, desc="A PUTX arrives (cross-die vnet1)";
 
@@ -227,6 +231,10 @@ machine(MachineType:Directory, "AIGCIC NoC DRAM controller agent")
           trigger(Event:GETX, in_msg.addr, tbe);
         } else if (in_msg.Type == CoherenceRequestType:PUTX) {
           trigger(Event:PUTX, in_msg.addr, tbe);
+        } else if (in_msg.Type == CoherenceRequestType:RELAY_PUTX) {
+          // trace-replay hop: the dir is a pass-through sink; no TBE, no
+          // DRAM, no WB_ACK (all relay traffic is one-way)
+          trigger(Event:RelayPut, in_msg.addr, tbe);
         } else {
           error("Invalid message");
         }
@@ -422,5 +430,19 @@ machine(MachineType:Directory, "AIGCIC NoC DRAM controller agent")
   transition(I, PUTX_XD) {
     lax_sendWriteBackAckXD;
     ix_popIncomingRequestXDQueue;
+  }
+
+  // Trace-replay relay hop: stateless silent drop (any dir state: the
+  // relay owns no TBE and touches no entry, so it is safe even if a
+  // normal access is in flight for the same block -- impossible in
+  // trace-only traffic, but harmless by construction)
+  transition(I, RelayPut) {
+    i_popIncomingRequestQueue;
+  }
+  transition(IM, RelayPut) {
+    i_popIncomingRequestQueue;
+  }
+  transition(MI, RelayPut) {
+    i_popIncomingRequestQueue;
   }
 }

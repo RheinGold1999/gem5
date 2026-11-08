@@ -177,6 +177,7 @@ structure(RubyRequest, desc="...", interface="Message", external="yes") {
   RubyAccessMode AccessMode, desc="user/supervisor access type";
   int Size,                  desc="size in bytes of access";
   int BurstSize,             desc="network burst payload in bytes (0 = default)";
+  int TraceId,   default="-1", desc="trace-replay record index (-1 = none)";
   PrefetchBit Prefetch,      desc="Is this a prefetch request";
   int contextId,             desc="this goes away but must be replace with Nilay";
   WriteMask writeMask,       desc="Writethrough mask";

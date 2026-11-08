@@ -339,7 +339,7 @@ class NetworkInterface : public ClockedObject, public Consumer
 
     void checkStallQueue();
     bool flitisizeMessage(MsgPtr msg_ptr, int vnet);
-    int calculateVC(int vnet);
+    int calculateVC(int vnet, bool trace = false);
 
 
     void scheduleOutputPort(OutputPort *oPort);

@@ -33,11 +33,13 @@
 #define __MEM_RUBY_NETWORK_GARNET_0_GARNETNETWORK_HH__
 
 #include <iostream>
+#include <memory>
 #include <vector>
 
 #include "mem/ruby/network/Network.hh"
 #include "mem/ruby/network/fault_model/FaultModel.hh"
 #include "mem/ruby/network/garnet/CommonTypes.hh"
+#include "mem/ruby/network/garnet/TraceReplay.hh"
 #include "params/GarnetNetwork.hh"
 
 namespace gem5
@@ -58,6 +60,7 @@ class Router;
 class NetworkLink;
 class NetworkBridge;
 class CreditLink;
+class TraceScheduler;
 
 class GarnetNetwork : public Network
 {
@@ -185,7 +188,16 @@ class GarnetNetwork : public Network
                                      ::gem5::ruby::Message *msg);
     int getNextPacketID() { return m_next_packet_id++; }
 
+    // ---- trace replay (see TraceReplay.hh) ----
+    // Created when the trace_plan_file param is set; null otherwise. The
+    // TraceScheduler wires itself in during its own init() (no param back
+    // reference: a scheduler<->network param cycle breaks instantiate).
+    TraceReplay *traceReplay() const { return m_trace_replay.get(); }
+
   protected:
+    std::unique_ptr<TraceReplay> m_trace_replay;
+    std::string m_trace_plan_file;
+
     // Configuration
     int m_num_rows;
     int m_num_cols;

@@ -1155,11 +1155,18 @@ Sequencer::issueRequest(PacketPtr pkt, RubyRequestType secondary_type)
             msg->setWriteMask(offset, pkt->getSize(), atomicOps);
         }
 
-        // Optional network burst size: the synthetic tester stamps the
-        // requested burst into the request's extra data. 0 keeps the
-        // protocol's default single-payload message.
+        // Optional network burst size + trace-replay record id, packed in
+        // the request's extra data by the synthetic tester:
+        //   [63:32] trace record index + 1 (0 = not trace traffic)
+        //   [31:0]  burst bytes
+        // 0 keeps the protocol's default single-payload message.
         if (pkt->req->extraDataValid()) {
-            msg->setBurstSize(pkt->req->getExtraData());
+            uint64_t extra = pkt->req->getExtraData();
+            msg->setBurstSize((uint32_t)(extra & 0xFFFFFFFF));
+            uint32_t tid1 = (uint32_t)(extra >> 32);
+            if (tid1 != 0) {
+                msg->setTraceId((int)tid1 - 1);
+            }
         }
 
         DPRINTFR(ProtocolTrace, "%15s %3s %10s%20s %6s>%-6s %#x %s\n",

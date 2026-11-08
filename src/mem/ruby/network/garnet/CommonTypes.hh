@@ -66,7 +66,7 @@ struct RouteInfo
 {
     RouteInfo()
         : vnet(0), src_ni(0), src_router(0), dest_ni(0), dest_router(0),
-          hops_traversed(0)
+          hops_traversed(0), trace_id(-1)
     {}
 
     // destination format for table-based routing
@@ -79,6 +79,12 @@ struct RouteInfo
     int dest_ni;
     int dest_router;
     int hops_traversed;
+
+    // Trace-replay record index (tools/trace_plan/compile_trace_plan.py).
+    // -1 for non-trace traffic. The router hook keys its relay plan on this
+    // id; it is rewritten at each relay hop so the id always names the
+    // record whose burst is currently on the wire.
+    int trace_id;
 };
 
 #define INFINITE_ 10000

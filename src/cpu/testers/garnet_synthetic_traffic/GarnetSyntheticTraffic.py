@@ -155,3 +155,12 @@ class GarnetSyntheticTraffic(ClockedObject):
     )
     test = RequestPort("Port to the memory system to test")
     system = Param.System(Parent.any, "System we belong to")
+    trace_plan_file = Param.String(
+        "",
+        "Path to the compiled trace plan (required by traffic_type='trace')",
+    )
+    trace_router_id = Param.Int(
+        -1,
+        "Fabric router id this tester injects for (traffic_type='trace'); "
+        "router id = row * fabric_cols + col",
+    )

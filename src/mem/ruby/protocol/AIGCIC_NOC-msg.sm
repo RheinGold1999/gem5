@@ -39,6 +39,7 @@
 enumeration(CoherenceRequestType, desc="...") {
   GETX,      desc="Get eXclusive (L1 miss: load or store)";
   PUTX,      desc="Put eXclusive (L1 writeback on replacement)";
+  RELAY_PUTX, desc="Trace-replay relay hop (data-carrying, silently dropped by the dir)";
 }
 
 // CoherenceResponseType
@@ -60,6 +61,9 @@ structure(RequestMsg, desc="...", interface="Message") {
   // behaviour). A burst write (PUTX) sets this to the burst size; a
   // read (GETX) carries it so the directory can size the DATA reply.
   int DataLength,              desc="network payload bytes (0 = default)";
+  // Trace-replay record index (-1 = not trace traffic). The router hook
+  // keys its relay plan on this id.
+  int TraceId,  default="-1",  desc="trace-replay record index";
 
   bool functionalRead(Packet *pkt) {
     // Valid data block is only present in PUTX messages

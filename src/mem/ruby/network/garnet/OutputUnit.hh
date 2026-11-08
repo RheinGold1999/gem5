@@ -67,8 +67,11 @@ class OutputUnit : public Consumer
     void decrement_credit(int out_vc);
     void increment_credit(int out_vc);
     bool has_credit(int out_vc);
+    bool has_credit_dbg(int out_vc, int &state, int &credit);
     bool has_free_vc(int vnet);
+    bool has_free_vc(int vnet, int cls);   // trace: class-restricted
     int select_free_vc(int vnet);
+    int select_free_vc(int vnet, int cls); // trace: class-restricted
 
     inline PortDirection get_direction() { return m_direction; }
 

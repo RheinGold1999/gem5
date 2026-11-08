@@ -553,7 +553,7 @@ NetworkInterface::flitisizeMessage(MsgPtr msg_ptr, int vnet)
     for (int ctr = 0; ctr < dest_nodes.size(); ctr++) {
 
         // this will return a free output virtual channel
-        int vc = calculateVC(vnet);
+        int vc = calculateVC(vnet, net_msg_ptr->getTraceId() >= 0);
 
         if (vc == -1) {
             return false ;
@@ -597,6 +597,9 @@ NetworkInterface::flitisizeMessage(MsgPtr msg_ptr, int vnet)
         route.src_router = oPort->routerID();
         route.dest_ni = destID;
         route.dest_router = m_net_ptr->get_router_id(destID, vnet);
+        // trace replay record index (-1 for non-trace traffic); the router
+        // hook keys its relay plan on it
+        route.trace_id = new_net_msg_ptr->getTraceId();
 
         // initialize hops_traversed to -1
         // so that the first router increments it to 0
@@ -622,15 +625,34 @@ NetworkInterface::flitisizeMessage(MsgPtr msg_ptr, int vnet)
     return true ;
 }
 
-// Looking for a free output vc
+// Looking for a free output vc. Trace-relay messages must start on
+// dateline class 0 (offset 0 within the vnet) so the class never decreases
+// along the path.
 int
-NetworkInterface::calculateVC(int vnet)
+NetworkInterface::calculateVC(int vnet, bool trace)
 {
-    for (int i = 0; i < m_vc_per_vnet; i++) {
+    int start_offset = trace ? 1 : 0;
+    for (int i = start_offset; i < m_vc_per_vnet; i++) {
         int delta = m_vc_allocator[vnet];
         m_vc_allocator[vnet]++;
         if (m_vc_allocator[vnet] == m_vc_per_vnet)
             m_vc_allocator[vnet] = 0;
+
+        if (trace && delta != 0) {
+            // class 0 only: restart the scan at the offset-0 VC
+            if (m_vc_allocator[vnet] != 0)
+                m_vc_allocator[vnet] = 0;
+            if (outVcState[(vnet*m_vc_per_vnet)].isInState(
+                        IDLE_, curTick())) {
+                vc_busy_counter[vnet] = 0;
+                return ((vnet*m_vc_per_vnet));
+            }
+            vc_busy_counter[vnet] += 1;
+            panic_if(vc_busy_counter[vnet] > m_deadlock_threshold,
+                "%s: Possible network deadlock in vnet: %d at time: %llu \n",
+                name(), vnet, curTick());
+            return -1;
+        }
 
         if (outVcState[(vnet*m_vc_per_vnet) + delta].isInState(
                     IDLE_, curTick())) {

@@ -174,6 +174,57 @@ Router::getOutportDirection(int outport)
     return m_output_unit[outport]->get_direction();
 }
 
+// ---- trace replay helpers ----
+
+bool
+Router::traceEnabled() const
+{
+    return m_network_ptr && m_network_ptr->traceReplay() &&
+           m_network_ptr->traceReplay()->enabled();
+}
+
+TraceReplay::HookResult
+Router::traceHook(int inport, int vc, int trace_id)
+{
+    return m_network_ptr->traceReplay()->hook(this, inport, vc, trace_id);
+}
+
+int
+Router::traceExpectedFlits(int trace_id) const
+{
+    return m_network_ptr->traceReplay()->expectedFlits(trace_id);
+}
+
+void
+Router::traceArrival(int inport, int vc, int trace_id)
+{
+    m_network_ptr->traceReplay()->onArrival(m_id, inport, vc, trace_id, this);
+}
+
+int
+Router::traceOutportForNext(int next_router) const
+{
+    const int cols = m_network_ptr->getNumCols();
+    const int my_row = m_id / cols;
+    const int my_col = m_id % cols;
+    const int n_row = next_router / cols;
+    const int n_col = next_router % cols;
+    // plan continuations are single hops: exactly one axis moves
+    PortDirection dirn;
+    if (n_col != my_col) {
+        dirn = (n_col > my_col) ? "East" : "West";
+    } else {
+        dirn = (n_row > my_row) ? "North" : "South";
+    }
+    for (size_t p = 0; p < m_output_unit.size(); p++) {
+        if (m_output_unit[p]->get_direction() == dirn) {
+            return (int)p;
+        }
+    }
+    panic("Router %d: no output port %s toward router %d",
+          m_id, dirn, next_router);
+}
+
 PortDirection
 Router::getInportDirection(int inport)
 {

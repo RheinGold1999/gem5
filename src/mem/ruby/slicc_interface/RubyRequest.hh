@@ -71,6 +71,10 @@ class RubyRequest : public Message
     // the network's default data size). Kept separate from m_Size so a
     // multi-flit burst does not change the functional access size.
     int m_BurstSize = 0;
+    // Trace-replay record index (-1 = not trace traffic). Carried through
+    // the protocol into RequestMsg so the garnet router hook can key the
+    // relay plan on it.
+    int m_TraceId = -1;
     PrefetchBit m_Prefetch;
     PacketPtr m_pkt;
     ContextID m_contextId;
@@ -247,6 +251,8 @@ class RubyRequest : public Message
     const int& getSize() const { return m_Size; }
     const int& getBurstSize() const { return m_BurstSize; }
     void setBurstSize(int burst_size) { m_BurstSize = burst_size; }
+    const int& getTraceId() const { return m_TraceId; }
+    void setTraceId(int trace_id) { m_TraceId = trace_id; }
     const PrefetchBit& getPrefetch() const { return m_Prefetch; }
     RequestPtr getRequestPtr() const { return m_pkt->req; }
 

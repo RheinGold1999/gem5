@@ -1,0 +1,12 @@
+trace-replay plan report: s1-layer-b
+  records=3425 messages=661 flit_bytes=128 routers=24
+  plan kinds: T(send)=679 R(root)=519 F(relay)=2227
+  dateline: max class=1  CDG nodes=150 edges=200 cycles=0 OK
+  class histogram: cls0=2844 cls1=581
+  branch fanout per arrival: {1: 2215, 2: 36, 3: 32}
+  merge group sizes (ups + absorbed legs): {2: 116, 3: 80}
+  absorbed legs (chained merge members, drained in-network): 120
+  taps (relay recs whose owner is a msg dst): 992
+  reconciliation: links.csv + summary.json rebuilt EXACTLY
+  window estimate: 2610 cycles (174 lclock waves x 15); worst injection-engine occupancy (rule b): r0c4=37.4%, r0c1=37.2%, r0c2=36.6%
+  plan written: traffic/trace/noc-trace-4x6/s1-layer-b/_plan/plan.txt

@@ -96,6 +96,13 @@ GarnetNetwork::GarnetNetwork(const Params &p)
     if (m_enable_fault_model)
         fault_model = p.fault_model;
 
+    // trace replay: enabled when a plan file is configured; the global
+    // scheduler attaches itself during its own init()
+    m_trace_plan_file = p.trace_plan_file;
+    if (!p.trace_plan_file.empty()) {
+        m_trace_replay = std::make_unique<TraceReplay>();
+    }
+
     m_vnet_type.resize(m_virtual_networks);
 
     for (int i = 0 ; i < m_virtual_networks ; i++) {
@@ -169,6 +176,14 @@ GarnetNetwork::init()
             router->printAggregateFaultProbability(std::cout);
             router->printFaultVector(std::cout);
         }
+    }
+
+    // trace replay: load the plan once the topology (and thus the router
+    // count / column count) is known
+    if (m_trace_replay) {
+        fatal_if(m_num_cols <= 0, "trace replay requires a mesh topology");
+        m_trace_replay->loadPlan(m_trace_plan_file, m_num_cols,
+                                 (int)m_routers.size(), getRubySystem());
     }
 }
 
@@ -405,6 +420,10 @@ void
 GarnetNetwork::regStats()
 {
     Network::regStats();
+
+    if (m_trace_replay) {
+        m_trace_replay->regStats(name());
+    }
 
     // Packets
     m_packets_received

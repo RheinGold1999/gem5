@@ -27,11 +27,14 @@
  */
 
 #include "cpu/testers/garnet_synthetic_traffic/GarnetSyntheticTraffic.hh"
+#include "mem/ruby/structures/TraceScheduler.hh"
 
+#include <algorithm>
 #include <cmath>
 #include <iomanip>
 #include <set>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 #include "base/intmath.hh"
@@ -148,7 +151,7 @@ GarnetSyntheticTraffic::GarnetSyntheticTraffic(const Params &p)
     // are allowed too.
     if (activeColumns > 0 || activeRows > 0) {
         assert(traffic == UNIFORM_RANDOM_ || traffic == NEIGHBOR_ ||
-               traffic == TABLE_);
+               traffic == TABLE_ || traffic == TRACE_);
     }
 
     id = TESTER_NETWORK++;
@@ -156,6 +159,21 @@ GarnetSyntheticTraffic::GarnetSyntheticTraffic(const Params &p)
     rng = Random::genRandom(Random::globalSeed + id);
     DPRINTF(GarnetSyntheticTraffic,"Config Created: Name = %s , and id = %d\n",
             name(), id);
+
+    // Trace-replay mode: --synthetic=trace --trace-plan=<plan.txt>. This
+    // tester injects the records it owns (fabric router id =
+    // trace_router_id) per the compiled plan; the global TraceScheduler
+    // drives the causal state.
+    traceMode = (traffic == TRACE_);
+    if (traceMode) {
+        if (p.trace_plan_file.empty() || p.trace_router_id < 0) {
+            fatal("%s: traffic_type='trace' requires --trace-plan and "
+                  "--trace-router-id\n", name());
+        }
+        tracePlanFile = p.trace_plan_file;
+        traceRouterId = p.trace_router_id;
+        initTracePlan();
+    }
 }
 
 Port &
@@ -171,6 +189,218 @@ void
 GarnetSyntheticTraffic::init()
 {
     numPacketsSent = 0;
+}
+
+// ---- trace replay ----
+
+void
+GarnetSyntheticTraffic::initTracePlan()
+{
+    std::ifstream in(tracePlanFile);
+    if (!in) {
+        fatal("%s: cannot open trace plan %s", name(), tracePlanFile);
+    }
+    std::string line;
+    while (std::getline(in, line)) {
+        if (line.empty() || line[0] == '#') continue;
+        std::istringstream iss(line);
+        std::string tag;
+        iss >> tag;
+        if (tag == "META") continue;
+        int idx = std::stoi(tag);
+        std::string kind_tok;
+        int owner, seq, next, bytes, tap, cls, lclock, n;
+        std::string msg_str, op, stage, rid;
+        iss >> kind_tok >> owner >> seq >> next >> bytes >> tap >> cls;
+        int rec_seq = seq;   // per-router send order
+        iss >> n;                                            // n_ups
+        for (int i = 0; i < n; i++) { int x; iss >> x; }     // ups
+        iss >> n;                                            // n_abs
+        for (int i = 0; i < n; i++) { int x; iss >> x; }     // abs
+        iss >> n;                                            // n_after
+        std::vector<int> afters(n);
+        for (int i = 0; i < n; i++) iss >> afters[i];
+        iss >> lclock >> msg_str >> op >> stage >> rid;
+        (void)lclock;
+
+        // plan cache for every record (branch legs inject from here too)
+        m_plan_next[idx] = next;
+        m_plan_bytes[idx] = bytes;
+
+        if (owner != traceRouterId || kind_tok == "F") {
+            continue;   // not injected by this tester
+        }
+        TraceSend s;
+        s.rec = idx;
+        s.seq = rec_seq;
+        s.msg = std::stol(msg_str.substr(1));   // 'mNNNNN' -> NNNNN
+        s.next = next;
+        s.bytes = bytes;
+        s.pending = s.pending0 = (int)afters.size();
+        s.state = TraceSend::WAIT;
+        m_trace_pos[idx] = m_trace_sends.size();
+        m_trace_sends.push_back(s);
+    }
+    // rule (a): the tester issues its sends in the trace's per-router seq
+    // order.  The plan file is in record-index order, which is NOT seq
+    // order (seq interleaves with relay records and can disagree with the
+    // lclock order), so sort by seq and rebuild the position index.
+    std::sort(m_trace_sends.begin(), m_trace_sends.end(),
+              [](const TraceSend &a, const TraceSend &b)
+              { return a.seq < b.seq; });
+    for (size_t i = 0; i < m_trace_sends.size(); i++) {
+        m_trace_pos[m_trace_sends[i].rec] = i;
+    }
+    inform("%s: trace mode armed, %d owned records", name(),
+           (int)m_trace_sends.size());
+}
+
+void
+GarnetSyntheticTraffic::traceWindowStart(long rep_base)
+{
+    m_trace_rep_base = rep_base;
+    for (auto &s : m_trace_sends) {
+        s.global = rep_base + s.rec;
+        s.state = TraceSend::WAIT;
+        s.pending = s.pending0;
+    }
+    m_trace_head = 0;
+    m_trace_inflight = 0;
+    m_trace_inflight_msg = -1;
+    m_trace_legs.clear();
+    m_trace_retry_kind = RETRY_NONE;
+    m_trace_retry_tid = -1;
+    // a retry pkt from the previous window is stale: drop it
+    if (retryPkt) {
+        delete retryPkt;
+        retryPkt = nullptr;
+    }
+}
+
+void
+GarnetSyntheticTraffic::traceTick()
+{
+    // dynamic branch legs first (network-driven, immediate)
+    while (!m_trace_legs.empty()) {
+        long tid = m_trace_legs.front();
+        if (traceSendPkt((int)(tid - m_trace_rep_base), tid, "leg")) {
+            m_trace_legs.pop_front();
+        } else {
+            return;    // held in retryPkt; recvReqRetry resumes
+        }
+    }
+
+    traceIssueHead();
+}
+
+void
+GarnetSyntheticTraffic::traceIssueHead()
+{
+    while (m_trace_head < m_trace_sends.size()) {
+        TraceSend &s = m_trace_sends[m_trace_head];
+        if (s.state == TraceSend::DONE || s.state == TraceSend::FLIGHT) {
+            m_trace_head++;
+            continue;
+        }
+        if (s.pending > 0) {
+            return;                       // WAIT_AFTER (after deps)
+        }
+        if (m_trace_inflight > 0 && m_trace_inflight_msg != s.msg) {
+            return;                       // rule (b): one burst group at a time
+        }
+        if (!traceSendPkt(s.rec, s.global, "head")) {
+            return;                       // port busy, recvReqRetry resumes
+        }
+        s.state = TraceSend::FLIGHT;
+        m_trace_inflight++;
+        m_trace_inflight_msg = s.msg;
+        m_trace_head++;
+    }
+}
+
+PacketPtr
+GarnetSyntheticTraffic::makeTracePkt(int rec_local, long global_tid)
+{
+    // address: the destination router's per-node window (mpu52 layout);
+    // the offset encodes the record index so every relay request has a
+    // unique address (the dir pops it statelessly)
+    panic_if(m_plan_next.find(rec_local) == m_plan_next.end(),
+             "%s: trace rec %d not in plan cache", name(), rec_local);
+    int next = m_plan_next[rec_local];
+    int bytes = m_plan_bytes[rec_local];
+    unsigned node_x = next / numColumns;    // mesh row
+    unsigned node_y = next % numColumns;    // mesh column
+    Addr paddr = (Addr)((node_y << 2) | node_x) << destShift;
+    paddr |= (Addr)rec_local << blockSizeBits;
+
+    RequestPtr req = std::make_shared<Request>(paddr, 1, Request::Flags(),
+                                               requestorId);
+    req->setContext(id);
+    // extraData: [63:32] record index + 1 (0 = not trace), [31:0] burst
+    req->setExtraData(((uint64_t)(global_tid + 1) << 32) |
+                      (uint64_t)(uint32_t)bytes);
+
+    PacketPtr pkt = new Packet(req, MemCmd::WriteReq);
+    pkt->dataDynamic(new uint8_t[req->getSize()]);
+    pkt->senderState = NULL;
+    return pkt;
+}
+
+void
+GarnetSyntheticTraffic::traceDumpStall()
+{
+    if (!traceMode) return;
+    int waiting_dep = 0, waiting_rb = 0, flight = 0, done = 0;
+    for (auto &s : m_trace_sends) {
+        if (s.state == TraceSend::DONE) { done++; continue; }
+        if (s.state == TraceSend::FLIGHT) { flight++; continue; }
+        if (s.pending > 0) waiting_dep++;
+        else waiting_rb++;
+    }
+    inform("%s: trace stall dump: head %d/%d done %d flight %d "
+           "wait-dep %d wait-ruleb %d inflight %d (msg %d)",
+           name(), (int)m_trace_head, (int)m_trace_sends.size(), done,
+           flight, waiting_dep, waiting_rb, m_trace_inflight,
+           m_trace_inflight_msg);
+    // the first two non-done records with their blockers
+    int shown = 0;
+    for (auto &s : m_trace_sends) {
+        if (s.state == TraceSend::DONE || s.state == TraceSend::FLIGHT ||
+            shown >= 2) {
+            continue;
+        }
+        inform("  rec %d (msg %d next %d bytes %d) state %d pending %d",
+               s.rec, s.msg, s.next, s.bytes, (int)s.state, s.pending);
+        shown++;
+    }
+}
+
+bool
+GarnetSyntheticTraffic::traceSendPkt(int rec_local, long global_tid,
+                                     const char *how)
+{
+    PacketPtr pkt = makeTracePkt(rec_local, global_tid);
+    DPRINTF(GarnetSyntheticTraffic, "trace issue rec %d tid %ld\n",
+            rec_local, global_tid);
+    if (!cachePort.sendTimingReq(pkt)) {
+        DPRINTF(GarnetSyntheticTraffic, "trace issue rec %d RETRY\n",
+                rec_local);
+        retryPkt = pkt;    // RubyPort will retry (recvReqRetry)
+        // m_trace_sends is seq-sorted: record index != position.  The
+        // failed send was either the current head (not yet advanced) or
+        // the front leg (not yet popped) -- classify against the head.
+        m_trace_retry_kind =
+            (m_trace_head < m_trace_sends.size() &&
+             m_trace_sends[m_trace_head].global == global_tid)
+            ? RETRY_HEAD : RETRY_LEG;
+        m_trace_retry_tid = global_tid;
+        return false;
+    }
+    numPacketsSent++;
+    if (m_trace_sched) {
+        m_trace_sched->event("ISSUE", global_tid, traceRouterId, how);
+    }
+    return true;
 }
 
 
@@ -191,8 +421,23 @@ GarnetSyntheticTraffic::completeRequest(PacketPtr pkt)
 void
 GarnetSyntheticTraffic::tick()
 {
-    if (++noResponseCycles >= responseLimit) {
+    // trace replay: the global scheduler owns progress and exit (idle
+    // testers own no records, so the response watchdog must not fire)
+    if (!traceMode && ++noResponseCycles >= responseLimit) {
         fatal("%s deadlocked at cycle %d\n", name(), curTick());
+    }
+
+    if (traceMode) {
+        // trace replay: the scheduler owns the causal state and the exit;
+        // this tick just drives the issue engine
+        traceTick();
+        if (curTick() >= simCycles) {
+            exitSimLoop("Network Tester completed simCycles");
+        } else {
+            if (!tickEvent.scheduled())
+                schedule(tickEvent, clockEdge(Cycles(1)));
+        }
+        return;
     }
 
     // make new request based on injection rate
@@ -523,6 +768,7 @@ GarnetSyntheticTraffic::initTrafficType()
     trafficStringToEnum["transpose"] = TRANSPOSE_;
     trafficStringToEnum["uniform_random"] = UNIFORM_RANDOM_;
     trafficStringToEnum["table"] = TABLE_;
+    trafficStringToEnum["trace"] = TRACE_;
 }
 
 void
@@ -662,6 +908,33 @@ GarnetSyntheticTraffic::active(int n) const
 void
 GarnetSyntheticTraffic::doRetry()
 {
+    if (traceMode && retryPkt) {
+        if (cachePort.sendTimingReq(retryPkt)) {
+            numPacketsSent++;
+            if (m_trace_sched) {
+                m_trace_sched->event("ISSUE", m_trace_retry_tid,
+                                     traceRouterId, "retry");
+            }
+            retryPkt = nullptr;
+            if (m_trace_retry_kind == RETRY_HEAD) {
+                // the held head is m_trace_head (it never advanced)
+                assert(m_trace_head < m_trace_sends.size());
+                auto &s = m_trace_sends[m_trace_head];
+                assert(s.global == m_trace_retry_tid);
+                s.state = TraceSend::FLIGHT;
+                m_trace_inflight++;
+                m_trace_inflight_msg = s.msg;
+                m_trace_head++;
+            } else if (m_trace_retry_kind == RETRY_LEG) {
+                assert(!m_trace_legs.empty());
+                m_trace_legs.pop_front();
+            }
+            m_trace_retry_kind = RETRY_NONE;
+            m_trace_retry_tid = -1;
+            traceTick();   // keep issuing
+        }
+        return;
+    }
     if (cachePort.sendTimingReq(retryPkt)) {
         retryPkt = NULL;
     }

@@ -95,6 +95,18 @@ class VirtualChannel
         return inputBuffer.getTopFlit();
     }
 
+    inline size_t
+    getSize()
+    {
+        return inputBuffer.getSize();
+    }
+
+    inline bool
+    isEmpty()
+    {
+        return inputBuffer.isEmpty();
+    }
+
     bool functionalRead(Packet *pkt, WriteMask &mask);
     uint32_t functionalWrite(Packet *pkt);
 

@@ -29,8 +29,10 @@
 #ifndef __CPU_GARNET_SYNTHETIC_TRAFFIC_HH__
 #define __CPU_GARNET_SYNTHETIC_TRAFFIC_HH__
 
+#include <deque>
 #include <set>
 #include <string>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -49,6 +51,11 @@
 namespace gem5
 {
 
+namespace ruby
+{
+class TraceScheduler;
+}
+
 enum TrafficType {BIT_COMPLEMENT_ = 0,
                   BIT_REVERSE_ = 1,
                   BIT_ROTATION_ = 2,
@@ -58,6 +65,7 @@ enum TrafficType {BIT_COMPLEMENT_ = 0,
                   TRANSPOSE_ = 6,
                   UNIFORM_RANDOM_ = 7,
                   TABLE_ = 8,
+                  TRACE_ = 9,
                   NUM_TRAFFIC_PATTERNS_};
 
 class Packet;
@@ -161,6 +169,81 @@ class GarnetSyntheticTraffic : public ClockedObject
     std::vector<double> tableThresholds;
     std::vector<std::vector<std::tuple<double, int, bool>>> tableEntries;
     void initTrafficTable(const std::string &fname);
+
+    // ---- TRACE_ traffic (--synthetic=trace --trace-plan=<file>) ----
+    // Replays one compiled trace window (see
+    // tools/trace_plan/compile_trace_plan.py). This tester injects the
+    // records it owns (plan kinds T/R, in seq order) as RELAY_PUTX write
+    // requests once (a) the scheduler signals their external after deps
+    // cleared and (b) rule (b) holds: no other burst group is in flight
+    // (same-msg groups pipeline). Branch legs requested by the scheduler
+    // are injected immediately from a dynamic queue.
+    struct TraceSend
+    {
+        long global = -1;   // global record id (rep_base + rec)
+        int rec = 0;        // window-local record index
+        int seq = 0;        // per-router send order (rule a: issue in seq)
+        int msg = 0;        // message index (rule-b same-msg exemption)
+        int next = 0;       // destination router (fabric id)
+        int bytes = 0;
+        int pending = 0;    // external after deps not yet cleared
+        int pending0 = 0;   // load-time value (re-armed per window)
+        enum State { WAIT, READY, FLIGHT, DONE } state = WAIT;
+    };
+    bool traceMode = false;
+    int traceRouterId = -1;
+    std::string tracePlanFile;
+    long m_trace_rep_base = 0;
+    std::vector<TraceSend> m_trace_sends;  // seq order
+    std::unordered_map<int, size_t> m_trace_pos;  // rec idx -> send position
+    std::unordered_map<int, int> m_plan_next;     // rec idx -> next router
+    std::unordered_map<int, int> m_plan_bytes;    // rec idx -> burst bytes
+    std::unordered_map<int, int> m_dbg_notify;    // dbg: notify count per rec
+    size_t m_trace_head = 0;               // first not-yet-issued record
+    int m_trace_inflight = 0;              // issued, not yet arrival-done
+    int m_trace_inflight_msg = -1;
+    std::deque<long> m_trace_legs;         // dynamic branch legs (global ids)
+    enum { RETRY_NONE, RETRY_HEAD, RETRY_LEG } m_trace_retry_kind = RETRY_NONE;
+    long m_trace_retry_tid = -1;
+
+    void initTracePlan();
+    void traceTick();
+    void traceIssueHead();
+    void traceIssueLeg(long tid);
+    bool traceSendPkt(int rec_local, long global_tid, const char *how);
+    PacketPtr makeTracePkt(int rec_local, long global_tid);
+
+  public:
+    // trace event log: the scheduler pushes itself in at init
+    void setTraceScheduler(ruby::TraceScheduler *s) { m_trace_sched = s; }
+
+  private:
+    ruby::TraceScheduler *m_trace_sched = nullptr;
+
+    // scheduler notifications
+  public:
+    void traceAfterSatisfied(int rec)
+    {
+        if (traceMode) {
+            m_dbg_notify[rec]++;
+            auto &s = m_trace_sends[m_trace_pos.at(rec)];
+            s.pending--;
+            if (s.pending < 0) {
+                warn("%s: rec %d pending went negative (%d notifies)",
+                     name(), rec, m_dbg_notify[rec]);
+            }
+        }
+    }
+    void traceSelfDone(int rec)
+    {
+        if (!traceMode) return;
+        auto &s = m_trace_sends[m_trace_pos.at(rec)];
+        s.state = TraceSend::DONE;
+        if (--m_trace_inflight == 0) m_trace_inflight_msg = -1;
+    }
+    void traceWindowStart(long rep_base);
+    void traceInjectLeg(long tid) { if (traceMode) m_trace_legs.push_back(tid); }
+    void traceDumpStall();
 
     const Cycles responseLimit;
 

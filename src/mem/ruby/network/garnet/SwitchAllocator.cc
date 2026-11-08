@@ -143,7 +143,10 @@ SwitchAllocator::arbitrate_inports()
 
             // check if the flit in this InputVC is allowed to be sent
             // send_allowed conditions described in that function.
-            if (!send_allowed(inport, invc, outport, outvc))
+            // (the required out-VC class for trace-relay streams rides
+            //  along so a bend waits for its exact class)
+            if (!send_allowed(inport, invc, outport, outvc,
+                              input_unit->traceVc(invc).cls))
                 continue;
 
             if (m_switch_arbiter != ROUND_ROBIN_) {
@@ -340,7 +343,8 @@ SwitchAllocator::arbitrate_outports()
  */
 
 bool
-SwitchAllocator::send_allowed(int inport, int invc, int outport, int outvc)
+SwitchAllocator::send_allowed(int inport, int invc, int outport, int outvc,
+                              int req_cls)
 {
     // Check if outvc needed
     // Check if credit needed (for multi-flit packet)
@@ -356,7 +360,7 @@ SwitchAllocator::send_allowed(int inport, int invc, int outport, int outvc)
         // needs outvc
         // this is only true for HEAD and HEAD_TAIL flits.
 
-        if (output_unit->has_free_vc(vnet)) {
+        if (output_unit->has_free_vc(vnet, req_cls)) {
 
             has_outvc = true;
 
@@ -365,6 +369,20 @@ SwitchAllocator::send_allowed(int inport, int invc, int outport, int outvc)
             has_credit = true;
         }
     } else {
+        int oc_state, oc_credit;
+        if (!output_unit->has_credit_dbg(outvc, oc_state, oc_credit) &&
+            oc_state != (int)gem5::ruby::garnet::ACTIVE_) {
+            auto *in_unit = m_router->getInputUnit(inport);
+            auto &tvc = in_unit->traceVc(invc);
+            auto *f = in_unit->peekTopFlit(invc);
+            panic("router %d: stale outvc %d (state %d credit %d) at "
+                  "inport %d invc %d (trace rec %d cls %d) "
+                  "flit rec %d type %d pkt %d tick %llu",
+                  m_router->get_id(), outvc, oc_state, oc_credit, inport,
+                  invc, tvc.rec, tvc.cls,
+                  f->get_route().trace_id, (int)f->get_type(),
+                  f->getPacketID(), curTick());
+        }
         has_credit = output_unit->has_credit(outvc);
     }
 
@@ -400,9 +418,11 @@ SwitchAllocator::send_allowed(int inport, int invc, int outport, int outvc)
 int
 SwitchAllocator::vc_allocate(int outport, int inport, int invc)
 {
-    // Select a free VC from the output port
+    // Select a free VC from the output port. Trace-relay streams carry a
+    // required dateline class in their input-VC state (-1 = unconstrained).
+    int cls = m_router->getInputUnit(inport)->traceVc(invc).cls;
     int outvc =
-        m_router->getOutputUnit(outport)->select_free_vc(get_vnet(invc));
+        m_router->getOutputUnit(outport)->select_free_vc(get_vnet(invc), cls);
 
     // has to get a valid VC since it checked before performing SA
     assert(outvc != -1);

@@ -40,6 +40,7 @@
 #include "mem/ruby/common/NetDest.hh"
 #include "mem/ruby/network/BasicRouter.hh"
 #include "mem/ruby/network/garnet/CommonTypes.hh"
+#include "mem/ruby/network/garnet/TraceReplay.hh"
 #include "mem/ruby/network/garnet/CrossbarSwitch.hh"
 #include "mem/ruby/network/garnet/GarnetNetwork.hh"
 #include "mem/ruby/network/garnet/RoutingUnit.hh"
@@ -112,6 +113,15 @@ class Router : public BasicRouter, public Consumer
     }
 
     int getBitWidth() { return m_bit_width; }
+
+    // ---- trace replay helpers (see TraceReplay.hh) ----
+    bool traceEnabled() const;
+    TraceReplay::HookResult traceHook(int inport, int vc, int trace_id);
+    void traceArrival(int inport, int vc, int trace_id);
+    int traceExpectedFlits(int trace_id) const;
+    // Output port index for one hop toward an adjacent router (the plan's
+    // continuations are single hops, so the axis move names the direction).
+    int traceOutportForNext(int next_router) const;
 
     PortDirection getOutportDirection(int outport);
     PortDirection getInportDirection(int inport);

@@ -92,6 +92,19 @@ OutputUnit::has_credit(int out_vc)
     return outVcState[out_vc].has_credit();
 }
 
+// Diagnostic variant: returns the credit state without asserting.
+bool
+OutputUnit::has_credit_dbg(int out_vc, int &state, int &credit)
+{
+    auto &vc = outVcState[out_vc];
+    credit = vc.get_credit_count();
+    state = vc.isInState(IDLE_, curTick()) ? (int)IDLE_
+          : vc.isInState(VC_AB_, curTick()) ? (int)VC_AB_
+          : vc.isInState(ACTIVE_, curTick()) ? (int)ACTIVE_
+          : -1;
+    return state == (int)ACTIVE_ && vc.has_credit();
+}
+
 
 // Check if the output port (i.e., input port at next router) has free VCs.
 bool
@@ -106,6 +119,18 @@ OutputUnit::has_free_vc(int vnet)
     return false;
 }
 
+// Class-restricted variant for trace replay (dateline VC classes: the
+// class must never decrease along a path, so a bend waits for its exact
+// class rather than drifting into a lower one).
+bool
+OutputUnit::has_free_vc(int vnet, int cls)
+{
+    if (cls < 0) {
+        return has_free_vc(vnet);
+    }
+    return is_vc_idle(vnet*m_vc_per_vnet + cls, curTick());
+}
+
 // Assign a free output VC to the winner of Switch Allocation
 int
 OutputUnit::select_free_vc(int vnet)
@@ -118,6 +143,22 @@ OutputUnit::select_free_vc(int vnet)
         }
     }
 
+    return -1;
+}
+
+// Class-restricted variant (cls >= 0): only the VC at offset cls within
+// the vnet is eligible; -1 signals "wait" (backpressure, no class drift).
+int
+OutputUnit::select_free_vc(int vnet, int cls)
+{
+    if (cls < 0) {
+        return select_free_vc(vnet);
+    }
+    int vc = vnet*m_vc_per_vnet + cls;
+    if (is_vc_idle(vc, curTick())) {
+        outVcState[vc].setState(ACTIVE_, curTick());
+        return vc;
+    }
     return -1;
 }
 
@@ -136,8 +177,12 @@ OutputUnit::wakeup()
         Credit *t_credit = (Credit*) m_credit_link->consumeLink();
         increment_credit(t_credit->get_vc());
 
-        if (t_credit->is_free_signal())
+        if (t_credit->is_free_signal()) {
+            DPRINTF(RubyNetwork, "freesig router %d outport %d(%s) "
+                    "vc %d tick %llu\n", m_router->get_id(), m_id,
+                    m_direction, t_credit->get_vc(), curTick());
             set_vc_state(IDLE_, t_credit->get_vc(), curTick());
+        }
 
         delete t_credit;
 

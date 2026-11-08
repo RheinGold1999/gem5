@@ -79,6 +79,7 @@ structure(WriteMask, external="yes", desc="...") {
 
 structure(DataBlock, external = "yes", desc="..."){
   void clear();
+  void realloc(int);
   void copyPartial(DataBlock, int, int);
   void copyPartial(DataBlock, WriteMask);
   void atomicPartial(DataBlock, WriteMask);

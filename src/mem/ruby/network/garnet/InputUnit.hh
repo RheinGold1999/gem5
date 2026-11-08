@@ -157,6 +157,20 @@ class InputUnit : public Consumer
 
     void resetStats();
 
+    // ---- trace replay (see TraceReplay.hh) ----
+
+    // Per-VC trace state: the identity this VC's stream departs with (-1 =
+    // non-trace) and its departure destination.
+    struct TraceVc
+    {
+        int rec = -1;      // the identity this VC's stream departs with
+        int cls = -1;      // required dateline VC class (-1 unconstrained)
+        int dest = -1;     // the departure destination router
+        int flits = 0;     // flits of this stream seen at this input unit
+    };
+
+    TraceVc &traceVc(int vc) { return m_trace_vc[vc]; }
+
   private:
     Router *m_router;
     int m_id;
@@ -168,6 +182,9 @@ class InputUnit : public Consumer
 
     // Input Virtual channels
     std::vector<VirtualChannel> virtualChannels;
+
+    // Per-VC trace-replay state (rec >= 0 marks a trace stream)
+    std::vector<TraceVc> m_trace_vc;
 
     // Statistical variables
     std::vector<double> m_num_buffer_writes;

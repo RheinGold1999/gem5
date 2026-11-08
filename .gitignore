@@ -41,3 +41,9 @@ typings
 .DS_Store
 .pi
 .venv
+# session/run junk (trace-replay debugging)
+__pycache__/
+m5out_trace_dbg*/
+stderr.txt
+stdout.txt
+cmd.txt

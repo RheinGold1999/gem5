@@ -52,9 +52,15 @@ machine(MachineType:L1Cache, "AIGCIC NoC L1 Cache")
       int gpu_id := 0;
 
       // NETWORK BUFFERS
-      // vnet0: request internal-die, vnet2: response internal-die
+      // vnet0: request internal-die, vnet2: response internal-die.
+      // NOTE: all four vnets are annotated vnet_type="response" so they
+      // resolve to DATA_VNET_ (4-flit buffers) -- vnet0/1 carry the data
+      // bursts (PUTX/RELAY_PUTX) and the upstream default maps
+      // "request"-typed vnets to 1-flit CTRL buffers.  The annotation's
+      // only consumer is the buffer-depth selection (OutVcState); it does
+      // not change vnet ordering or routing.
       MessageBuffer * requestFromCache, network="To", virtual_network="0",
-            vnet_type="request";
+            vnet_type="response";
 
       MessageBuffer * responseFromCache, network="To", virtual_network="2",
             vnet_type="response";
@@ -66,7 +72,7 @@ machine(MachineType:L1Cache, "AIGCIC NoC L1 Cache")
       // (path in place; unused until the address map routes cross-die
       // traffic to them)
       MessageBuffer * requestFromCacheXD, network="To", virtual_network="1",
-            vnet_type="request";
+            vnet_type="response";
 
       MessageBuffer * responseToCacheXD, network="From", virtual_network="3",
             vnet_type="response";
@@ -90,6 +96,7 @@ machine(MachineType:L1Cache, "AIGCIC NoC L1 Cache")
     Load,       desc="Load request from processor";
     Ifetch,     desc="Ifetch request from processor";
     Store,      desc="Store request from processor";
+    Relay,      desc="Trace-replay relay hop: RELAY_PUTX, local completion";
     Load_XD,    desc="Load request, destination on another die (vnet1)";
     Ifetch_XD,  desc="Ifetch request, cross-die (vnet1)";
     Store_XD,   desc="Store request, cross-die (vnet1)";
@@ -146,6 +153,17 @@ machine(MachineType:L1Cache, "AIGCIC NoC L1 Cache")
   }
 
   // FUNCTIONS
+  // Trace-replay relay completion: the tester's write completes locally
+  // (no network response). The payload is irrelevant for the synthetic
+  // replay, so an empty block is passed.
+  void completeRelayWriteback(Addr addr) {
+    // The synthetic relay payload is 1 byte at block offset 0; a small
+    // allocation is enough for the local completion's data copy.
+    DataBlock blk;
+    blk.realloc(64);
+    sequencer.writeCallback(addr, blk);
+  }
+
   Event mandatory_request_type_to_event(RubyRequestType type) {
    if (type == RubyRequestType:LD) {
       return Event:Load;
@@ -312,7 +330,16 @@ machine(MachineType:L1Cache, "AIGCIC NoC L1 Cache")
       peek(mandatoryQueue_in, RubyRequest, block_on="LineAddress") {
 
         Entry cache_entry := getCacheEntry(in_msg.LineAddress);
-        if (is_invalid(cache_entry) &&
+
+        // Trace-replay relay hop: the request carries a record index;
+        // issue RELAY_PUTX and complete the tester's write locally (no
+        // network response, no cache state). Independent of the cache
+        // entry, so it must be checked before the eviction path.
+        if (in_msg.TraceId >= 0) {
+          trigger(Event:Relay, in_msg.LineAddress, cache_entry,
+                  TBEs[in_msg.LineAddress]);
+        }
+        else if (is_invalid(cache_entry) &&
             cacheMemory.cacheAvail(in_msg.LineAddress) == false ) {
           // make room for the block
           // Check if the line we want to evict is not locked
@@ -453,6 +480,30 @@ machine(MachineType:L1Cache, "AIGCIC NoC L1 Cache")
 
   action(m_popMandatoryQueue, "m", desc="Pop the mandatory request queue") {
     mandatoryQueue_in.dequeue(clockEdge());
+  }
+
+  // Trace-replay relay hop: forward the burst as RELAY_PUTX on vnet0 and
+  // complete the tester's write locally (no TBE, no cache state, no WB_ACK
+  // -- the directory drops RELAY_PUTX silently). The per-record payload
+  // rides BurstSize; the record index rides TraceId.
+  action(br_issueRelay, "br", desc="Issue RELAY_PUTX for a trace relay hop") {
+    peek(mandatoryQueue_in, RubyRequest) {
+      enqueue(requestNetwork_out, RequestMsg, issue_latency) {
+        out_msg.addr := address;
+        out_msg.Type := CoherenceRequestType:RELAY_PUTX;
+        out_msg.Requestor := machineID;
+        out_msg.Destination.add(mapAddressToMachine(address,
+                                                    MachineType:Directory));
+        out_msg.MessageSize := MessageSizeType:Data;
+        out_msg.DataLength := in_msg.BurstSize;
+        out_msg.TraceId := in_msg.TraceId;
+      }
+    }
+  }
+
+  action(lr_completeRelayLocally, "lr",
+         desc="Complete the tester's relay write locally (no response)") {
+    completeRelayWriteback(address);
   }
 
   action(n_popResponseQueue, "n", desc="Pop the response queue") {
@@ -619,6 +670,15 @@ machine(MachineType:L1Cache, "AIGCIC NoC L1 Cache")
     v_allocateTBE;
     bw_issuePUTWrite;
     p_profileMiss;
+    m_popMandatoryQueue;
+  }
+
+  // Trace-replay relay hop: stateless pass-through. The relay address is
+  // never allocated in the cache (relay requests dispatch before the
+  // eviction/probe path), so this only fires from I.
+  transition(I, Relay) {
+    br_issueRelay;
+    lr_completeRelayLocally;
     m_popMandatoryQueue;
   }
 

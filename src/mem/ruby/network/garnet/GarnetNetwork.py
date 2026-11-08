@@ -58,6 +58,12 @@ class GarnetNetwork(RubyNetwork):
         "(oldest-first by enqueue time at the source network interface)"
     )
     enable_fault_model = Param.Bool(False, "enable network fault model")
+    trace_plan_file = Param.String(
+        "",
+        "Path to a compiled trace-replay plan (plan.txt from "
+        "tools/trace_plan/compile_trace_plan.py). Non-empty enables the "
+        "in-network trace replay hook; requires trace_scheduler.",
+    )
     fault_model = Param.FaultModel(NULL, "network fault model")
     garnet_deadlock_threshold = Param.UInt32(
         50000, "network-level deadlock threshold"

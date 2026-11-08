@@ -8,12 +8,12 @@
  * modification, are permitted provided that the following conditions are
  * met: redistributions of source code must retain the above copyright
  * notice, this list of conditions and the following disclaimer;
- * redistributions in binary form must reproduce the above copyright
- * notice, this list of conditions and the following disclaimer in the
- * documentation and/or other materials provided with the distribution;
- * neither the name of the copyright holders nor the names of its
- * contributors may be used to endorse or promote products derived from
- * this software without specific prior written permission.
+ * redistributions in source and binary forms must reproduce the above
+ * copyright notice, this list of conditions and the following disclaimer
+ * in the documentation and/or other materials provided with the
+ * distribution; neither the name of the copyright holders nor the names
+ * of its contributors may be used to endorse or promote products derived
+ * from this software without specific prior written permission.
  *
  * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
  * "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
@@ -28,12 +28,12 @@
  * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-
 #include "mem/ruby/network/garnet/InputUnit.hh"
 
 #include "debug/RubyNetwork.hh"
 #include "mem/ruby/network/garnet/Credit.hh"
 #include "mem/ruby/network/garnet/Router.hh"
+#include "mem/ruby/network/garnet/TraceReplay.hh"
 
 namespace gem5
 {
@@ -51,6 +51,7 @@ InputUnit::InputUnit(int id, PortDirection direction, Router *router)
     const int m_num_vcs = m_router->get_num_vcs();
     m_num_buffer_reads.resize(m_num_vcs/m_vc_per_vnet);
     m_num_buffer_writes.resize(m_num_vcs/m_vc_per_vnet);
+    m_trace_vc.resize(m_num_vcs);
     for (int i = 0; i < m_num_buffer_reads.size(); i++) {
         m_num_buffer_reads[i] = 0;
         m_num_buffer_writes[i] = 0;
@@ -71,6 +72,20 @@ InputUnit::InputUnit(int id, PortDirection direction, Router *router)
  * The flit is buffered for (m_latency - 1) cycles in the input VC
  * and marked as valid for SwitchAllocation starting that cycle.
  *
+ * Trace replay (see TraceReplay.hh): every flit of a trace stream carries
+ * the record index of the hop it is currently traversing in
+ * RouteInfo::trace_id.  The HEAD flit consults the relay hook before route
+ * computation:
+ *   HOOK_REWRITE: the head's destination/identity are rewritten to the
+ *       continuation record and the head is routed to the pre-computed
+ *       output port (cut-through relay; body/tail flits follow the VC).
+ *   HOOK_EJECT:   the stream is routed to the local dir (silent pop); the
+ *       continuation's stream is re-injected later by the owning tester.
+ *   HOOK_NORMAL:  terminal or source pass-through, plain routing.
+ * Body/tail flits are re-stamped with the input VC's current (identity,
+ * destination) so a multi-flit stream stays consistent while its head is
+ * already several hops ahead.  The TAIL flit fires the arrival event (the
+ * record's burst fully delivered at this router).
  */
 
 void
@@ -90,25 +105,86 @@ InputUnit::wakeup()
         // per-router flit residence latency stats).
         t_flit->set_enter_cycle(m_router->curCycle());
 
-        if ((t_flit->get_type() == HEAD_) ||
-            (t_flit->get_type() == HEAD_TAIL_)) {
+        // ---- trace replay hook (see TraceReplay.hh) ----
+        const bool trace = m_router->traceEnabled();
+        const int tid = trace ? t_flit->get_route().trace_id : -1;
+        const bool is_head = (t_flit->get_type() == HEAD_) ||
+                             (t_flit->get_type() == HEAD_TAIL_);
 
+        if (is_head) {
             assert(virtualChannels[vc].get_state() == IDLE_);
             set_vc_active(vc, curTick());
 
-            // Route computation for this vc
-            int outport = m_router->route_compute(t_flit->get_route(),
-                m_id, m_direction);
+            if (trace && tid >= 0) {
+                TraceReplay::HookResult hr =
+                    m_router->traceHook(m_id, vc, tid);
+                if (hr.action == TraceReplay::HOOK_REWRITE) {
+                    // cut-through relay: rewrite the destination and this
+                    // stream's identity; route directly to the pre-computed
+                    // output port (bypasses the routing table)
+                    RouteInfo route = t_flit->get_route();
+                    route.dest_router = hr.next;
+                    route.trace_id = hr.cont;
+                    route.net_dest = hr.net_dest;
+                    t_flit->set_route(route);
+                    m_trace_vc[vc] = {hr.cont, hr.cls, hr.next, 1};
+                    grant_outport(vc, hr.outport);
+                } else if (hr.action == TraceReplay::HOOK_EJECT) {
+                    // hold point: eject the stream into the local dir (the
+                    // dir pops it silently); the continuation's stream is
+                    // re-injected from this router's tester when its wait
+                    // completes. No buffer slots are held while waiting.
+                    // NOTE: InputUnit::m_id is the PORT number, not the
+                    // router id -- the router id must come from the router.
+                    RouteInfo route = t_flit->get_route();
+                    route.dest_router = m_router->get_id();
+                    route.net_dest = hr.net_dest;
+                    t_flit->set_route(route);
+                    m_trace_vc[vc] = {tid, -1, m_router->get_id(), 1};
+                    int outport = m_router->route_compute(
+                        t_flit->get_route(), m_id, m_direction);
+                    grant_outport(vc, outport);
+                } else {
+                    // terminal (eject here): unconstrained class -- or
+                    // source pass-through: pinned to class 0 (F10) so the
+                    // first hop never grabs the class-1 VC
+                    m_trace_vc[vc] = {tid, hr.cls,
+                                      (int)t_flit->get_route().dest_router,
+                                      1};
+                    // Route computation for this vc
+                    int outport = m_router->route_compute(
+                        t_flit->get_route(), m_id, m_direction);
+                    // Update output port in VC
+                    // All flits in this packet will use this output port
+                    // The output port field in the flit is updated after it
+                    // wins SA
+                    grant_outport(vc, outport);
+                }
+            } else {
+                m_trace_vc[vc] = {-1, -1, -1, 0};
+                // Route computation for this vc
+                int outport = m_router->route_compute(t_flit->get_route(),
+                    m_id, m_direction);
 
-            // Update output port in VC
-            // All flits in this packet will use this output port
-            // The output port field in the flit is updated after it wins SA
-            grant_outport(vc, outport);
-
+                // Update output port in VC
+                // All flits in this packet will use this output port
+                // The output port field in the flit is updated after it
+                // wins SA
+                grant_outport(vc, outport);
+            }
         } else {
             assert(virtualChannels[vc].get_state() == ACTIVE_);
+            // body/tail of a trace stream always carry the input VC's
+            // current identity and destination (the head may already have
+            // been rewritten at this router while the body was in flight)
+            if (trace && m_trace_vc[vc].rec >= 0) {
+                RouteInfo route = t_flit->get_route();
+                route.trace_id = m_trace_vc[vc].rec;
+                route.dest_router = m_trace_vc[vc].dest;
+                t_flit->set_route(route);
+                m_trace_vc[vc].flits++;
+            }
         }
-
 
         // Buffer the flit
         virtualChannels[vc].insertFlit(t_flit);
@@ -134,6 +210,22 @@ InputUnit::wakeup()
 
             // Wakeup the router in that cycle to perform SA
             m_router->schedule_wakeup(Cycles(wait_time));
+        }
+
+        // Burst completion: the tail flit of the arriving record just
+        // landed. Fires the arrival event with the identity the stream
+        // carried on this hop (the record whose delivery this is).
+        if (trace && tid >= 0 &&
+            (t_flit->get_type() == TAIL_ ||
+             t_flit->get_type() == HEAD_TAIL_)) {
+            // spec 6: the delivered burst's flit count must equal the
+            // plan's ceil(bytes/flit) for the record it delivered
+            panic_if(m_trace_vc[vc].flits !=
+                         m_router->traceExpectedFlits(tid),
+                     "Router[%d]: burst of rec %d delivered %d flits, "
+                     "plan expects %d", m_id, tid, m_trace_vc[vc].flits,
+                     m_router->traceExpectedFlits(tid));
+            m_router->traceArrival(m_id, vc, tid);
         }
 
         if (m_in_link->isReady(curTick())) {
