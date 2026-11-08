@@ -371,9 +371,8 @@ elif args.traffic_table:
 if args.synthetic == "trace":
     if not args.trace_plan:
         fatal("--synthetic=trace requires --trace-plan=<plan.txt>.")
-    if args.vcs_per_vnet < 2:
-        fatal("--synthetic=trace requires --vcs-per-vnet >= 2 (dateline "
-              "VC classes: 0 = first phase, 1 = post-bend).")
+    if args.vcs_per_vnet < 1:
+        fatal("--synthetic=trace requires --vcs-per-vnet >= 1.")
     if args.addr_layout != "mpu52":
         fatal("--synthetic=trace requires --addr-layout=mpu52 (relay "
               "addresses target the per-node dir windows).")

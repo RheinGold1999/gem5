@@ -172,6 +172,11 @@ class TraceReplay
     // What a given arriving record triggers at its next router.
     struct ArrivalEntry
     {
+        // SEGMENTED MODE: the continuation (if any) whose hop continues in
+        // the arrival's own direction -- the only one eligible for an
+        // in-network rewrite.  Every other continuation is a bend and must
+        // split the packet (EJECT + re-inject leg); -1 = none straight.
+        int straight_cont = -1;
         std::vector<TraceCont> conts;  // empty = terminal (normal eject)
         bool tap = false;              // arriving router is a msg dst
         int hold_id = -1;              // release group (single or merge)

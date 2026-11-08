@@ -625,34 +625,19 @@ NetworkInterface::flitisizeMessage(MsgPtr msg_ptr, int vnet)
     return true ;
 }
 
-// Looking for a free output vc. Trace-relay messages must start on
-// dateline class 0 (offset 0 within the vnet) so the class never decreases
-// along the path.
+// Looking for a free output vc.  SEGMENTED MODE: trace streams never
+// change axis in-flight (bends split the packet), so the per-direction
+// channel DAGs alone make any vcs_per_vnet -- including 1 -- deadlock-free
+// without VC classes; the allocation is unconstrained.
 int
 NetworkInterface::calculateVC(int vnet, bool trace)
 {
-    int start_offset = trace ? 1 : 0;
-    for (int i = start_offset; i < m_vc_per_vnet; i++) {
+    (void)trace;   // segmented mode: allocation is unconstrained
+    for (int i = 0; i < m_vc_per_vnet; i++) {
         int delta = m_vc_allocator[vnet];
         m_vc_allocator[vnet]++;
         if (m_vc_allocator[vnet] == m_vc_per_vnet)
             m_vc_allocator[vnet] = 0;
-
-        if (trace && delta != 0) {
-            // class 0 only: restart the scan at the offset-0 VC
-            if (m_vc_allocator[vnet] != 0)
-                m_vc_allocator[vnet] = 0;
-            if (outVcState[(vnet*m_vc_per_vnet)].isInState(
-                        IDLE_, curTick())) {
-                vc_busy_counter[vnet] = 0;
-                return ((vnet*m_vc_per_vnet));
-            }
-            vc_busy_counter[vnet] += 1;
-            panic_if(vc_busy_counter[vnet] > m_deadlock_threshold,
-                "%s: Possible network deadlock in vnet: %d at time: %llu \n",
-                name(), vnet, curTick());
-            return -1;
-        }
 
         if (outVcState[(vnet*m_vc_per_vnet) + delta].isInState(
                     IDLE_, curTick())) {

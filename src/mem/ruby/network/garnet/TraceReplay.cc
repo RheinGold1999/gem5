@@ -146,6 +146,31 @@ TraceReplay::loadPlan(const std::string &plan_path, int fabric_cols,
             m_arrival[a].tap = m_arrival[a].tap || rec.tap;
         }
     }
+    // SEGMENTED MODE: pre-compute each arrival's straight continuation.
+    // The arriving hop's direction is rec.next - rec.router; a
+    // continuation is straight iff its own hop has the same direction.
+    // In-network rewrites are only ever straight (a bend splits the
+    // packet), so every in-network run is single-axis monotone and the
+    // per-direction channel DAGs alone guarantee deadlock freedom -- no
+    // VC classes needed (vcs_per_vnet == 1 suffices).
+    for (size_t a = 0; a < m_arrival.size(); a++) {
+        ArrivalEntry &e = m_arrival[a];
+        if (e.conts.empty()) {
+            continue;
+        }
+        const TraceRec &arr = m_recs[a];
+        int dr = arr.next / m_fabric_cols - arr.owner / m_fabric_cols;
+        int dc = arr.next % m_fabric_cols - arr.owner % m_fabric_cols;
+        for (auto &c : e.conts) {
+            const TraceRec &cc = m_recs[c.rec];
+            int cr = cc.next / m_fabric_cols - cc.owner / m_fabric_cols;
+            int cc2 = cc.next % m_fabric_cols - cc.owner % m_fabric_cols;
+            if (cr == dr && cc2 == dc) {
+                e.straight_cont = c.rec;
+                break;
+            }
+        }
+    }
 
     for (const auto &rec : m_recs) {
         panic_if(rec.term_dest.getSize() == 0,
@@ -203,11 +228,11 @@ TraceReplay::hook(Router *router, int inport, int vc, int trace_id)
         // departure identity and destination are already correct (the NI
         // stamped rec's own next hop). No rewrite here -- the record's
         // continuation is consulted when the stream ARRIVES at next.
-        // F10: injected streams (heads and legs) start on dateline
-        // class 0 -- an unconstrained grant could hand out the class-1
-        // VC and create a class-decreasing edge the plan's CDG never
-        // modeled.
-        hr.cls = 0;
+        // SEGMENTED MODE: no VC classes -- unconstrained grant.  Every
+        // in-network run is single-axis monotone (bends split the
+        // packet), so the per-direction channel DAGs alone make any
+        // vcs_per_vnet (including 1) deadlock-free.
+        hr.cls = -1;
         DPRINTF(RubyNetwork, "trace hook router %d rec %d: source pass\n",
                 router->get_id(), rec);
         return hr;  // HOOK_NORMAL
@@ -249,12 +274,26 @@ TraceReplay::hook(Router *router, int inport, int vc, int trace_id)
         DPRINTF(RubyNetwork, "trace hook router %d rec %d single cont %d "
                 "size %d rem %d afters_ok %d\n", router->get_id(), rec,
                 g.cont, g.group_size, g.arrivals_remaining, g.afters_ok);
-        if (g.group_size == 1 && g.afters_ok) {
+        // SEGMENTED MODE: a bend (direction change) between the arriving
+        // hop and the continuation splits the packet -- the arriving
+        // stream ejects and the continuation is re-injected as a fresh
+        // leg by this router's tester.  In-network rewrites are only
+        // ever straight, so no packet changes axis in-flight and the
+        // per-direction channel DAGs alone make vcs_per_vnet == 1
+        // deadlock-free (no VC classes).
+        const TraceRec &arr_rec = m_recs[rec];
+        bool bend = ((cont.next / m_fabric_cols - cont.owner / m_fabric_cols)
+                     != (arr_rec.next / m_fabric_cols
+                         - arr_rec.owner / m_fabric_cols))
+                 || ((cont.next % m_fabric_cols - cont.owner % m_fabric_cols)
+                     != (arr_rec.next % m_fabric_cols
+                         - arr_rec.owner % m_fabric_cols));
+        if (g.group_size == 1 && g.afters_ok && !bend) {
             hr.action = HOOK_REWRITE;
             hr.outport = router->traceOutportForNext(cont.next);
             hr.next = cont.next;
             hr.cont = m_rep_base + g.cont;
-            hr.cls = cont.cls;
+            hr.cls = -1;                  // segmented: no VC classes
             hr.net_dest = cont.term_dest;
             g.fired = true;   // realized by this rewrite; no re-inject leg
             m_relayRewrites++;
@@ -275,31 +314,47 @@ TraceReplay::hook(Router *router, int inport, int vc, int trace_id)
                                  m_flit_bytes;
         }
         hr.action = HOOK_EJECT;
+        hr.cls = -1;                  // segmented: no VC classes
         hr.cont = m_rep_base + g.cont;
         hr.net_dest = m_local_dest[router->get_id()];
         m_relayHolds++;
         if (m_scheduler->logging()) {
             m_scheduler->event("RELAY", m_rep_base + rec, router->get_id(),
-                               "act=EJECT cont=" + std::to_string(hr.cont));
+                               std::string("act=EJECT cont=") +
+                               std::to_string(hr.cont) +
+                               (bend ? " bend=1" : ""));
         }
         return hr;
     }
 
-    // branch arrival (k > 1 continuations): the first continuation is the
-    // cut-through rewrite; the extra legs are re-injected by their owning
-    // tester when this burst completes (the arrival handler fires
-    // scheduler->relayLeg for them)
+    // branch arrival (k > 1 continuations).  SEGMENTED MODE: only a
+    // straight continuation may be realized by the cut-through rewrite
+    // (pre-computed in straight_cont); all other continuations -- and the
+    // whole arrival when nothing is straight -- are re-injected as legs
+    // by their owning testers when this burst completes.
     for (auto &c : e.conts) {
         m_groups[m_rec_group[c.rec]].fired = true;
     }
-    const TraceRec &cont = m_recs[e.conts[0].rec];
-    hr.action = HOOK_REWRITE;
-    hr.outport = router->traceOutportForNext(cont.next);
-    hr.next = cont.next;
-    hr.cont = m_rep_base + e.conts[0].rec;
-    hr.cls = cont.cls;
-    hr.net_dest = cont.term_dest;
-    m_relayRewrites++;
+    if (e.straight_cont >= 0) {
+        const TraceRec &cont = m_recs[e.straight_cont];
+        hr.action = HOOK_REWRITE;
+        hr.outport = router->traceOutportForNext(cont.next);
+        hr.next = cont.next;
+        hr.cont = m_rep_base + e.straight_cont;
+        hr.cls = -1;              // segmented: no VC classes
+        hr.net_dest = cont.term_dest;
+        m_relayRewrites++;
+        if (m_scheduler->logging()) {
+            m_scheduler->event("RELAY", m_rep_base + rec, router->get_id(),
+                               "act=BRANCH cont=" + std::to_string(hr.cont));
+        }
+        return hr;
+    }
+    // no straight continuation: eject; onArrival dispatches legs for all
+    hr.action = HOOK_EJECT;
+    hr.cls = -1;
+    hr.net_dest = m_local_dest[router->get_id()];
+    m_relayHolds++;
     if (m_scheduler->logging()) {
         m_scheduler->event("RELAY", m_rep_base + rec, router->get_id(),
                            "act=BRANCH cont=" + std::to_string(hr.cont));
@@ -348,9 +403,13 @@ TraceReplay::onArrival(int router_id, int inport, int vc, int trace_id,
         m_scheduler->tapDelivered(m_rep_base + rec, m_recs[rec].bytes);
     }
     if (e.conts.size() > 1) {
-        // branch: extra legs are re-injected by the owning tester
-        m_branchLegs += (long)(e.conts.size() - 1);
-        for (size_t i = 1; i < e.conts.size(); i++) {
+        // branch: every continuation except the straight one (realized by
+        // the hook's rewrite) is re-injected by its owning tester
+        for (size_t i = 0; i < e.conts.size(); i++) {
+            if (e.conts[i].rec == e.straight_cont) {
+                continue;
+            }
+            m_branchLegs++;
             m_scheduler->relayLeg(m_rep_base + e.conts[i].rec);
         }
     }
