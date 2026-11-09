@@ -1,10 +1,5 @@
-# Trace-Replay Performance Simulation Report (English draft)
+# Trace-Replay Performance Simulation Report
 
-> Configuration: baseline = `buffer-size-per-vc=4`,
-> `vc-num-per-vnet=2`; max resources = `buffer-size-per-vc=16`,
-> `vc-num-per-vnet=16`. Four windows, repeat=2 (attribution) / repeat=1
-> (sweeps). Link- and msg-level reconciliation passes on every configured
-> run (per-link flit counts match the trace exactly; 8/8 msg checks PASS).
 
 ## 1. Trace and Replay Implementation in Brief
 
@@ -66,14 +61,14 @@ Makespan (cycles, repeat=1):
 
 | Configuration | s1-a | s1-b | s4-a | s4-b | vs baseline |
 |---|---|---|---|---|---|
-| **baseline: buffer-size-per-vc=4, vc-num-per-vnet=2** | 1911 | 1665 | 5571 | 5190 | 1.00 |
-| buffer-size-per-vc=1 | 4028 | 3692 | 14293 | 13335 | 2.11-2.57x |
-| buffer-size-per-vc=2 | 2454 | 2183 | 8094 | 7477 | 1.28-1.45x |
-| buffer-size-per-vc=8 | 1858 | 1625 | 5465 | 5015 | 0.93-0.97x |
-| buffer-size-per-vc=16 | 1858 | 1625 | 5455 | 5009 | 0.93-0.97x |
-| vc-num-per-vnet=4 | 1822 | 1599 | 5416 | 4963 | 0.95-0.97x |
-| vc-num-per-vnet=8 | 1821 | 1598 | 5344 | 4891 | 0.94-0.97x |
-| vc-num-per-vnet=16 | 1821 | 1598 | 5342 | 4889 | 0.94-0.97x |
+| **baseline: buffer-size-per-vc=4, vc-num-per-vnet=2** | 1895 | 1636 | 5542 | 5149 | 1.00 |
+| buffer-size-per-vc=1 | 4010 | 3594 | 14235 | 13252 | 2.12-2.57x |
+| buffer-size-per-vc=2 | 2436 | 2163 | 8088 | 7465 | 1.29-1.46x |
+| buffer-size-per-vc=8 | 1842 | 1580 | 5464 | 4989 | 0.95-0.98x |
+| buffer-size-per-vc=16 | 1842 | 1580 | 5443 | 4988 | 0.95-0.98x |
+| vc-num-per-vnet=4 | 1758 | 1517 | 5466 | 5004 | 0.93-0.96x |
+| vc-num-per-vnet=8 | 1758 | 1517 | 5398 | 4936 | 0.93-0.96x |
+| vc-num-per-vnet=16 | 1758 | 1517 | 5388 | 4926 | 0.93-0.96x |
 
 Reading:
 1. **buffer-size-per-vc is the first-order sensitivity**: =1 (the upstream
@@ -105,13 +100,13 @@ makespan exactly):
 
 | Window | Config | W (k cyc) | T1 | T2 | T3 | T4a |
 |---|---|---|---|---|---|---|
-| s1-a | baseline | 1911 | 3.2% | 36.4% | 27.3% | 33.1% |
+| s1-a | baseline | 1896 | 1.7% | 40.5% | 27.1% | 30.7% |
 | s1-a | **max** | 1766 | 2.8% | 36.6% | 29.8% | 30.7% |
-| s1-b | baseline | 1665 | 3.7% | 32.3% | 23.3% | 40.8% |
+| s1-b | baseline | 1637 | 2.0% | 37.5% | 22.3% | 38.1% |
 | s1-b | **max** | 1532 | 3.3% | 35.1% | 25.1% | 36.5% |
-| s4-a | baseline | 5571 | -- | 46.2% | 18.4% | 35.3% |
+| s4-a | baseline | 5543 | -- | 44.9% | 18.8% | 36.1% |
 | s4-a | **max** | 5082 | 0.1% | 43.5% | 20.1% | 36.2% |
-| s4-b | baseline | 5190 | -- | 46.2% | 17.7% | 36.0% |
+| s4-b | baseline | 5150 | -- | 46.5% | 17.6% | 35.8% |
 | s4-b | **max** | 4639 | 0.1% | 44.9% | 19.2% | 35.6% |
 
 (T4r resource wait ~0 on the critical path; T1 = external-data waits of
