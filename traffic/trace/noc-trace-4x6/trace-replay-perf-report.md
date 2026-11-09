@@ -40,8 +40,7 @@ unicast / 多播树 / 在网归约树 / allreduce;记录间有 `after` 依赖 DA
 - **flit 与链路**:flit = **128 B**,每条链路每方向 1 flit/cycle;消息的
   flit 数 = ceil(字节 / 128)(如 352 B → 3 flits,512 B → 4 flits)。
 - **缓冲与 VC(baseline)**:buffer-size-per-vc = **4 flit**,
-  vc-num-per-vnet = **2**(其中 1 个供直行段、1 个供转弯后段——分段模式
-  下包不换轴,转弯处断包重注入,故单 VC 亦无死锁)。
+  vc-num-per-vnet = **2**。
 - **时钟**:1 GHz(1 cycle = 1000 ticks),本文所有时延/makespan 均以
   cycle 计。
 
