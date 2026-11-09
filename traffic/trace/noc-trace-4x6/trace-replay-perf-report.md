@@ -1,6 +1,6 @@
 # trace replay 性能仿真报告(中文 draft)
 
-> 配置:分段模式分支,`buffer-size-per-vc=4`、`vc-num-per-vnet=2` 为 baseline;
+> 配置:`buffer-size-per-vc=4`、`vc-num-per-vnet=2` 为 baseline;
 > 最大资源 = `buffer-size-per-vc=16, vc-num-per-vnet=16`。
 > 四窗口 repeat=2(attribution)repeat=1(sweep)。
 > 所有链路/msg 对账在全部配置下通过(链路逐条零差异、msg 八项 PASS)。
@@ -15,7 +15,7 @@ unicast / 多播树 / 在网归约树 / allreduce;记录间有 `after` 依赖 DA
 
 **回放实现**(hop-level in-network replay):
 - plan 编译器:trace → 逐 router 的中继计划;直行/弯分类;信道依赖图
-  (分段模式:单轴单调包,无类即无死锁)与 links.csv 精确对账为强制门;
+  (包为单轴单调,无 VC 类即无死锁)与 links.csv 精确对账为强制门;
 - 传输:tester 按 after 依赖与**整组串行注入纪律**(每个 router 的注入引擎
   同一时刻只发一个消息的 burst 组;组内流水并行,换组须等当前组全部落地)
   注入写请求(`RELAY_PUTX`,静默中继,
@@ -46,7 +46,7 @@ unicast / 多播树 / 在网归约树 / allreduce;记录间有 `after` 依赖 DA
 
 ## 3. buffer-size-per-vc 与 vc-num-per-vnet 扫描(baseline:4 / 2)
 
-makespan(cycles,repeat=1,分段模式):
+makespan(cycles,repeat=1):
 
 | 配置 | s1-a | s1-b | s4-a | s4-b | 相对 baseline |
 |---|---|---|---|---|---|
