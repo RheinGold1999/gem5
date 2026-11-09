@@ -1,6 +1,6 @@
 # Trace-Replay Performance Simulation Report (English draft)
 
-> Configuration: segmented-mode branch; baseline = `buffer-size-per-vc=4`,
+> Configuration: baseline = `buffer-size-per-vc=4`,
 > `vc-num-per-vnet=2`; max resources = `buffer-size-per-vc=16`,
 > `vc-num-per-vnet=16`. Four windows, repeat=2 (attribution) / repeat=1
 > (sweeps). Link- and msg-level reconciliation passes on every configured
@@ -18,9 +18,9 @@ a per-router `seq` issue order. Sizes: 4210/3425/10205/9420 records,
 
 **Replay** (hop-level in-network replay):
 - Plan compiler: trace -> per-router relay plan; straight/bend
-  classification; channel-dependency-graph check (segmented mode: packets
-  are single-axis monotone, deadlock-free without VC classes) and exact
-  links.csv reconciliation as mandatory gates;
+  classification; channel-dependency-graph check (packets are single-axis
+  monotone, deadlock-free without VC classes) and exact links.csv
+  reconciliation as mandatory gates;
 - Transport: the tester injects write requests (`RELAY_PUTX`, silently
   relayed, no responses) following the after dependencies and the
   **whole-group serial injection discipline** (each router's injection
@@ -62,7 +62,7 @@ a per-router `seq` issue order. Sizes: 4210/3425/10205/9420 records,
 
 ## 3. buffer-size-per-vc and vc-num-per-vnet Sweeps (baseline: 4 / 2)
 
-Makespan (cycles, repeat=1, segmented mode):
+Makespan (cycles, repeat=1):
 
 | Configuration | s1-a | s1-b | s4-a | s4-b | vs baseline |
 |---|---|---|---|---|---|
