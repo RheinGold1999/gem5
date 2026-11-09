@@ -1,7 +1,8 @@
 # trace replay 性能仿真报告(中文 draft)
 
-> 配置:分段模式分支,`data-buffer=4`、`vcs=2` 为 baseline;
-> 最大资源 = `vcs=16, buffers=16`。四窗口 repeat=2(attribution)repeat=1(sweep)。
+> 配置:分段模式分支,`buffer-size-per-vc=4`、`vc-num-per-vnet=2` 为 baseline;
+> 最大资源 = `buffer-size-per-vc=16, vc-num-per-vnet=16`。
+> 四窗口 repeat=2(attribution)repeat=1(sweep)。
 > 所有链路/msg 对账在全部配置下通过(链路逐条零差异、msg 八项 PASS)。
 
 ## 1. trace 与回放实现简介
@@ -26,32 +27,50 @@ unicast / 多播树 / 在网归约树 / allreduce;记录间有 `after` 依赖 DA
   (完成唯一性/实现唯一性/因果/发送次序/msg 完备性/字节)全 PASS;
   运行时断言(burst flit 数、rec.next 合法性等)零触发。
 
-## 2. buffer-size 与 vcs 扫描(baseline:d=4, vcs=2)
+## 2. MPU NoC 架构介绍
+
+- **拓扑**:4 行 × 6 列的 mesh(逻辑 4×6,实现在 4×8 fabric 上,inactive 列
+  不承载流量),共 24 个 router;**XY 维序路由**(先行后列,链路权重强制)。
+- **节点**:每个 router 挂一个 L1 控制器(核侧)与一个目录控制器(DRAM
+  网关),各自独立 NI 与本地端口;无 cache 一致性,目录对 trace 流量
+  静默接收(理想 DRAM 网关)。
+- **vnet 分配**:4 个 vnet——vnet0/1 为请求类(片内/跨die),vnet2/3 为
+  响应类;本次 trace 流量全部在 **vnet0**(片内请求)。四个 vnet 已统一
+  标注为 DATA 型(每 VC 4 个 flit 缓冲,见 §3 的 buffer-size-per-vc)。
+- **flit 与链路**:flit = **128 B**,每条链路每方向 1 flit/cycle;消息的
+  flit 数 = ceil(字节 / 128)(如 352 B → 3 flits,512 B → 4 flits)。
+- **缓冲与 VC(baseline)**:buffer-size-per-vc = **4 flit**,
+  vc-num-per-vnet = **2**(其中 1 个供直行段、1 个供转弯后段——分段模式
+  下包不换轴,转弯处断包重注入,故单 VC 亦无死锁)。
+- **时钟**:1 GHz(1 cycle = 1000 ticks),本文所有时延/makespan 均以
+  cycle 计。
+
+## 3. buffer-size-per-vc 与 vc-num-per-vnet 扫描(baseline:4 / 2)
 
 makespan(cycles,repeat=1,分段模式):
 
 | 配置 | s1-a | s1-b | s4-a | s4-b | 相对 baseline |
 |---|---|---|---|---|---|
-| **baseline d=4, vcs=2** | 1911 | 1665 | 5571 | 5190 | 1.00 |
-| d=1(vcs=2) | 4028 | 3692 | 14293 | 13335 | 2.11-2.57× |
-| d=2(vcs=2) | 2454 | 2183 | 8094 | 7477 | 1.28-1.45× |
-| d=8(vcs=2) | 1858 | 1625 | 5465 | 5015 | 0.93-0.97× |
-| d=16(vcs=2) | 1858 | 1625 | 5455 | 5009 | 0.93-0.97× |
-| vcs=4(d=4) | 1822 | 1599 | 5416 | 4963 | 0.95-0.97× |
-| vcs=8(d=4) | 1821 | 1598 | 5344 | 4891 | 0.94-0.97× |
-| vcs=16(d=4) | 1821 | 1598 | 5342 | 4889 | 0.94-0.97× |
+| **baseline: buffer-size-per-vc=4, vc-num-per-vnet=2** | 1911 | 1665 | 5571 | 5190 | 1.00 |
+| buffer-size-per-vc=1 | 4028 | 3692 | 14293 | 13335 | 2.11-2.57× |
+| buffer-size-per-vc=2 | 2454 | 2183 | 8094 | 7477 | 1.28-1.45× |
+| buffer-size-per-vc=8 | 1858 | 1625 | 5465 | 5015 | 0.93-0.97× |
+| buffer-size-per-vc=16 | 1858 | 1625 | 5455 | 5009 | 0.93-0.97× |
+| vc-num-per-vnet=4 | 1822 | 1599 | 5416 | 4963 | 0.95-0.97× |
+| vc-num-per-vnet=8 | 1821 | 1598 | 5344 | 4891 | 0.94-0.97× |
+| vc-num-per-vnet=16 | 1821 | 1598 | 5342 | 4889 | 0.94-0.97× |
 
 读法:
-1. **buffer 深度是第一敏感参数**:d=1(上游"request vnet"默认)比 d=4 慢
-   2.1-2.6 倍——数据 burst 被信用往返逐 flit 串行化;F14 统一 DATA_VNET
-   (4-flit)后已修复;
-2. d=4 处于**膝点**:到 d=8/16 仅再快 3-7%,两维(d、vcs)扫描都收敛到
+1. **buffer-size-per-vc 是第一敏感参数**:=1(上游"request vnet"默认)比
+   =4 慢 2.1-2.6 倍——数据 burst 被信用往返逐 flit 串行化;F14 统一
+   DATA_VNET(4-flit)后已修复;
+2. =4 处于**膝点**:到 =8/16 仅再快 3-7%,两维(buffer、vcs)扫描都收敛到
    同一依赖下限(≈1820/1600/5340/4890);
-3. vcs=2→4 有 3-5% 收益(消除端口队头阻塞),vcs≥8 饱和;
+3. vc-num-per-vnet 2→4 有 3-5% 收益(消除端口队头阻塞),≥8 饱和;
 4. **最忙链路在所有配置下 ≤25%**——NoC 带宽不是瓶颈;
 5. d=1 复现改型前行为(4434 vs 4422),交叉验证参数通路。
 
-## 3. makespan 拆分:baseline vs 最大资源(vcs=16, d=16)
+## 4. makespan 拆分:baseline vs 最大资源(vc-num-per-vnet=16, buffer-size-per-vc=16)
 
 口径:窗口关键路径回溯,四类时间(链上和 = makespan):
 - **T1 结构/依赖等待(改写)**:网内改写等待外部 after 数据;
@@ -84,15 +103,17 @@ makespan(cycles,repeat=1,分段模式):
    消除,不是 NoC 配置可解;
 4. T3(固有传输)18-30%:纯物理成本,随链长线性。
 
-## 4. 结论
+## 5. 结论
 
-1. **NoC 带宽与缓冲都不是瓶颈**:最忙链路 <25%,d=4/vcs=2 距无限资源仅
-   8-11%;F14(4-flit DATA 缓冲)已消除了最大的流控失真;
+1. **NoC 带宽与缓冲都不是瓶颈**:最忙链路 <25%,baseline(buffer-size-per-vc=4,
+   vc-num-per-vnet=2)距无限资源仅 8-11%;统一 DATA_VNET(4-flit 缓冲)已
+   消除最大的流控失真;
 2. **makespan 由依赖关键路径主导**:T2(执行模型纪律 35-46%)+ 汇聚点的
    结构串行(T4a 残余 30-37%)是两大块;纯传输(T3)只占 18-30%;
 3. **改进方向在通信结构而非 NoC 参数**:减少汇聚深度、打散 A16/列 0 类
    关键路径、放宽"一次一个 burst 组"的注入纪律(若真实系统允许)——
-   这些在算子/调度层;NoC 侧的 buffer/vcs 参数已在其收益平台上;
+   这些在算子/调度层;NoC 侧的 buffer-size-per-vc / vc-num-per-vnet
+   参数已在其收益平台上;
 4. **口径警告**:回放无计算模型——T1/T2 的"依赖"是 trace 的 after/lclock
    结构(分析模型的执行安排),真实系统中依赖段还混有算子计算时间;
    T2 为回放执行模型所注入,外推到真实 GPU 时需按其注入引擎行为修正。
