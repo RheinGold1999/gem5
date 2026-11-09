@@ -114,9 +114,10 @@ compile_trace_plan.py ──► <window>/_plan/plan.txt (只读,运行时加载)
   InputUnit **计满(tail flit 到达,逐 flit 计数)**。sequencer 本地完成、末 flit 离开
   本地 NI、整条消息端到端送达,都**不是**完成事件。
 - **F3 规则 a**:注入串行化链**只覆盖 send rec**(T/R);relay 不参与。
-- **F4 规则 b**:READY 的 send rec 准出条件 = 本 router **所有在途 send rec 已
-  ARRIVAL_DONE**,同 msg 豁免(在途集合全为同 msg 时可放行)。不变式:在途集合
-  恒为单一 msg 的"burst 组";换 msg 必须整组落地。
+- **F4 规则 b(对外名称:整组串行注入纪律)**:READY 的 send rec 准出条件 =
+  本 router **所有在途 send rec 已 ARRIVAL_DONE**,同 msg 豁免(在途集合全为
+  同 msg 时可放行)。不变式:在途集合恒为单一 msg 的"burst 组";换 msg 必须
+  整组落地。
 - **F5 规则 c**:汇聚点**不享受**同 msg 豁免——多成员组须等**全部成员 burst 计满**
   (每个成员的 ARRIVAL_DONE)且延续的外部 after 清零,延续**恰好实现一次**。
 - **F6 head 改写的准许**:仅限"单成员组且外部 after 已清零";带外部依赖的单成员、
