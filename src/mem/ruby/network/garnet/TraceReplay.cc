@@ -235,6 +235,10 @@ TraceReplay::hook(Router *router, int inport, int vc, int trace_id)
         hr.cls = -1;
         DPRINTF(RubyNetwork, "trace hook router %d rec %d: source pass\n",
                 router->get_id(), rec);
+        if (m_scheduler->logging()) {
+            m_scheduler->event("HOOK", m_rep_base + rec, router->get_id(),
+                               "act=PASS");
+        }
         return hr;  // HOOK_NORMAL
     }
     if (m_recs[rec].next != router->get_id()) {
@@ -247,6 +251,10 @@ TraceReplay::hook(Router *router, int inport, int vc, int trace_id)
 
     if (e.conts.empty()) {
         // terminal: normal routing ejects the stream into the local dir
+        if (m_scheduler->logging()) {
+            m_scheduler->event("HOOK", m_rep_base + rec, router->get_id(),
+                               "act=TERMINAL");
+        }
         return hr;  // HOOK_NORMAL
     }
 

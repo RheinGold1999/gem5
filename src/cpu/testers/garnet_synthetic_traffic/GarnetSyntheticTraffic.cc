@@ -263,6 +263,8 @@ GarnetSyntheticTraffic::traceWindowStart(long rep_base)
         s.global = rep_base + s.rec;
         s.state = TraceSend::WAIT;
         s.pending = s.pending0;
+        s.ready_logged = false;
+        s.first_try_logged = false;
     }
     m_trace_head = 0;
     m_trace_inflight = 0;
@@ -296,6 +298,9 @@ GarnetSyntheticTraffic::traceTick()
 void
 GarnetSyntheticTraffic::traceIssueHead()
 {
+    if (retryPkt) {
+        return;    // a head retry is pending: recvReqRetry resumes
+    }
     while (m_trace_head < m_trace_sends.size()) {
         TraceSend &s = m_trace_sends[m_trace_head];
         if (s.state == TraceSend::DONE || s.state == TraceSend::FLIGHT) {
@@ -347,6 +352,19 @@ GarnetSyntheticTraffic::makeTracePkt(int rec_local, long global_tid)
 }
 
 void
+GarnetSyntheticTraffic::traceLogReady(long global_tid, int rec_local)
+{
+    auto &s = m_trace_sends[m_trace_pos.at(rec_local)];
+    if (s.ready_logged) {
+        return;
+    }
+    s.ready_logged = true;
+    if (m_trace_sched) {
+        m_trace_sched->event("READY", global_tid, traceRouterId, "ready");
+    }
+}
+
+void
 GarnetSyntheticTraffic::traceDumpStall()
 {
     if (!traceMode) return;
@@ -379,6 +397,21 @@ bool
 GarnetSyntheticTraffic::traceSendPkt(int rec_local, long global_tid,
                                      const char *how)
 {
+    // FIRST_TRY: the record passed the model gates (after/rule-b/seq) and
+    // reached the send attempt -- any delay from here to the successful
+    // ISSUE is NoC resource wait (T4r) in the attribution.  Heads only:
+    // legs have no TraceSend entry (their resource wait is derivable as
+    // ISSUE - LEG_DISPATCH from the existing events).
+    if (traceMode && m_trace_pos.count(rec_local)) {
+        auto &ts = m_trace_sends[m_trace_pos.at(rec_local)];
+        if (!ts.first_try_logged) {
+            ts.first_try_logged = true;
+            if (m_trace_sched) {
+                m_trace_sched->event("FIRST_TRY", global_tid, traceRouterId,
+                                     "go");
+            }
+        }
+    }
     PacketPtr pkt = makeTracePkt(rec_local, global_tid);
     DPRINTF(GarnetSyntheticTraffic, "trace issue rec %d tid %ld\n",
             rec_local, global_tid);

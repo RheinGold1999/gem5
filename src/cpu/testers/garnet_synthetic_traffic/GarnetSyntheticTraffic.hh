@@ -188,6 +188,8 @@ class GarnetSyntheticTraffic : public ClockedObject
         int bytes = 0;
         int pending = 0;    // external after deps not yet cleared
         int pending0 = 0;   // load-time value (re-armed per window)
+        bool ready_logged = false;   // READY event logged (per window)
+        bool first_try_logged = false; // FIRST_TRY event logged
         enum State { WAIT, READY, FLIGHT, DONE } state = WAIT;
     };
     bool traceMode = false;
@@ -216,6 +218,7 @@ class GarnetSyntheticTraffic : public ClockedObject
   public:
     // trace event log: the scheduler pushes itself in at init
     void setTraceScheduler(ruby::TraceScheduler *s) { m_trace_sched = s; }
+    void traceLogReady(long global_tid, int rec_local);
 
   private:
     ruby::TraceScheduler *m_trace_sched = nullptr;
@@ -228,6 +231,13 @@ class GarnetSyntheticTraffic : public ClockedObject
             m_dbg_notify[rec]++;
             auto &s = m_trace_sends[m_trace_pos.at(rec)];
             s.pending--;
+            if (s.pending == 0 && !s.ready_logged) {
+                // deps cleared: the record becomes startable (READY);
+                // any further delay to its ISSUE is rule-b/seq (T2) or
+                // NoC resource wait (T4r) -- split in the attribution
+                // (logged from the .cc: TraceScheduler is incomplete here)
+                traceLogReady(m_trace_rep_base + rec, rec);
+            }
             if (s.pending < 0) {
                 warn("%s: rec %d pending went negative (%d notifies)",
                      name(), rec, m_dbg_notify[rec]);
