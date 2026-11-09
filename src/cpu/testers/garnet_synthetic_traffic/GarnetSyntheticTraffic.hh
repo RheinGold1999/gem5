@@ -201,6 +201,8 @@ class GarnetSyntheticTraffic : public ClockedObject
     std::unordered_map<int, int> m_plan_next;     // rec idx -> next router
     std::unordered_map<int, int> m_plan_bytes;    // rec idx -> burst bytes
     std::unordered_map<int, int> m_dbg_notify;    // dbg: notify count per rec
+    int m_trace_inflight = 0;              // issued, not yet arrival-done
+    int m_trace_inflight_msg = -1;         // in-flight burst group's msg
     std::deque<long> m_trace_legs;         // dynamic branch legs (global ids)
     enum { RETRY_NONE, RETRY_SEND, RETRY_LEG } m_trace_retry_kind = RETRY_NONE;
     long m_trace_retry_tid = -1;
@@ -245,6 +247,7 @@ class GarnetSyntheticTraffic : public ClockedObject
     {
         if (!traceMode) return;
         m_trace_sends[m_trace_pos.at(rec)].state = TraceSend::DONE;
+        if (--m_trace_inflight == 0) m_trace_inflight_msg = -1;
     }
     void traceWindowStart(long rep_base);
     void traceInjectLeg(long tid) { if (traceMode) m_trace_legs.push_back(tid); }

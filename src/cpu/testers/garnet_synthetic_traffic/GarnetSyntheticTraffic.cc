@@ -266,6 +266,8 @@ GarnetSyntheticTraffic::traceWindowStart(long rep_base)
         s.ready_logged = false;
         s.first_try_logged = false;
     }
+    m_trace_inflight = 0;
+    m_trace_inflight_msg = -1;
     m_trace_legs.clear();
     m_trace_retry_kind = RETRY_NONE;
     m_trace_retry_tid = -1;
@@ -298,19 +300,26 @@ GarnetSyntheticTraffic::traceIssueHead()
     if (retryPkt) {
         return;    // a send retry is pending: recvReqRetry resumes
     }
-    // OUT-OF-ORDER injection: every send record issues as soon as its own
-    // after deps are cleared (pending == 0).  No seq-order blocking and no
-    // burst-group discipline -- the trace's per-router seq is not enforced
-    // by the injection path (spec: out-of-order semantics, supersedes the
-    // rule-a/b injection discipline on this branch).
+    // INJECTION DISCIPLINE: seq order is NOT enforced (out-of-order) --
+    // every send record whose own after deps are cleared is a candidate.
+    // The burst-group rule (b) still applies: a record may join the flight
+    // only if the in-flight set is empty or all of the same msg (records
+    // of other msgs are skipped and wait for the group to land).  This
+    // keeps the in-flight set homogeneous in msg at all times.
     for (auto &s : m_trace_sends) {
         if (s.state != TraceSend::WAIT || s.pending > 0) {
             continue;
         }
+        if (m_trace_inflight > 0 && m_trace_inflight_msg != s.msg) {
+            continue;    // rule b: wait for the in-flight group to land
+        }
+        assert(m_trace_inflight == 0 || m_trace_inflight_msg == s.msg);
         if (!traceSendPkt(s.rec, s.global, "send")) {
             return;    // port busy: recvReqRetry resumes this record
         }
         s.state = TraceSend::FLIGHT;
+        m_trace_inflight++;
+        m_trace_inflight_msg = s.msg;
     }
 }
 
