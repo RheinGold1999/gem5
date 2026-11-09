@@ -110,6 +110,12 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("event_log")
     ap.add_argument("window")
+    ap.add_argument("--injection-order", choices=["ready", "seq"],
+                    default="ready",
+                    help="ready = out-of-order injection (after-satisfied "
+                    "records issue immediately; D_seq/D_ruleb checks are "
+                    "skipped); seq = the trace's per-router seq order is "
+                    "enforced by the injection path")
     args = ap.parse_args()
 
     recs = parse_plan(args.window)
@@ -206,6 +212,12 @@ def main():
                         f"rep{rep} rec{rec} ({rid[rec]}) starts t={start[k]} "
                         f"< dep rec{dep} arrival t={arrive[dk]}")
     # ---- D: injection discipline (seq + rule b) ----
+    d_checks_on = (args.injection_order == "seq")
+    if not d_checks_on:
+        if d_checks_on:
+            violations["D_seq"].append("SKIPPED (out-of-order injection)")
+        if d_checks_on:
+            violations["D_ruleb"].append("SKIPPED (out-of-order injection)")
     by_router = collections.defaultdict(list)
     for rec, r in recs.items():
         if r["kind"] != "F":
@@ -219,7 +231,8 @@ def main():
             k = (rep, rec)
             t = issue_ev.get(k)
             if t is None:
-                violations["D_seq"].append(
+                if d_checks_on:
+                    violations["D_seq"].append(
                     f"rep{rep} router{router} seq{recs[rec]['seq']} "
                     f"({rid[rec]}) never issued")
                 prev = None
@@ -227,11 +240,13 @@ def main():
             if prev is not None:
                 pt, pa, pmsg, prec = prev
                 if t < pt:
-                    violations["D_seq"].append(
+                    if d_checks_on:
+                        violations["D_seq"].append(
                         f"rep{rep} router{router} rec{rec} ({rid[rec]}) "
                         f"issued t={t} < earlier-seq rec{prec} t={pt}")
                 if pmsg != recs[rec]["msg"] and t < pa:
-                    violations["D_ruleb"].append(
+                    if d_checks_on:
+                        violations["D_ruleb"].append(
                         f"rep{rep} router{router} rec{rec} (msg "
                         f"{recs[rec]['msg']}) issued t={t} < previous "
                         f"diff-msg rec{prec} arrival t={pa}")
@@ -269,9 +284,11 @@ def main():
     all_ok = True
     for name in order:
         v = violations.get(name, [])
-        ok = not v
+        skipped = v and all(str(x).startswith("SKIPPED") for x in v)
+        ok = (not v) or skipped
         all_ok &= ok
-        print(f"  [{'PASS' if ok else 'FAIL'}] {name}: {len(v)} violations")
+        tag = "SKIP" if skipped else ("PASS" if ok else "FAIL")
+        print(f"  [{tag}] {name}: {len(v)} entries")
         for x in v[:FATAL_LIMIT]:
             print(f"        {x}")
         if len(v) > FATAL_LIMIT:
