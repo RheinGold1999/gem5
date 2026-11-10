@@ -263,8 +263,9 @@ GarnetSyntheticTraffic::traceWindowStart(long rep_base)
         s.global = rep_base + s.rec;
         s.state = TraceSend::WAIT;
         s.pending = s.pending0;
+        s.ready_logged = false;
+        s.first_try_logged = false;
     }
-    m_trace_head = 0;
     m_trace_inflight = 0;
     m_trace_inflight_msg = -1;
     m_trace_legs.clear();
@@ -296,25 +297,29 @@ GarnetSyntheticTraffic::traceTick()
 void
 GarnetSyntheticTraffic::traceIssueHead()
 {
-    while (m_trace_head < m_trace_sends.size()) {
-        TraceSend &s = m_trace_sends[m_trace_head];
-        if (s.state == TraceSend::DONE || s.state == TraceSend::FLIGHT) {
-            m_trace_head++;
+    if (retryPkt) {
+        return;    // a send retry is pending: recvReqRetry resumes
+    }
+    // INJECTION DISCIPLINE: seq order is NOT enforced (out-of-order) --
+    // every send record whose own after deps are cleared is a candidate.
+    // The burst-group rule (b) still applies: a record may join the flight
+    // only if the in-flight set is empty or all of the same msg (records
+    // of other msgs are skipped and wait for the group to land).  This
+    // keeps the in-flight set homogeneous in msg at all times.
+    for (auto &s : m_trace_sends) {
+        if (s.state != TraceSend::WAIT || s.pending > 0) {
             continue;
         }
-        if (s.pending > 0) {
-            return;                       // WAIT_AFTER (after deps)
-        }
         if (m_trace_inflight > 0 && m_trace_inflight_msg != s.msg) {
-            return;                       // rule (b): one burst group at a time
+            continue;    // rule b: wait for the in-flight group to land
         }
-        if (!traceSendPkt(s.rec, s.global, "head")) {
-            return;                       // port busy, recvReqRetry resumes
+        assert(m_trace_inflight == 0 || m_trace_inflight_msg == s.msg);
+        if (!traceSendPkt(s.rec, s.global, "send")) {
+            return;    // port busy: recvReqRetry resumes this record
         }
         s.state = TraceSend::FLIGHT;
         m_trace_inflight++;
         m_trace_inflight_msg = s.msg;
-        m_trace_head++;
     }
 }
 
@@ -347,6 +352,19 @@ GarnetSyntheticTraffic::makeTracePkt(int rec_local, long global_tid)
 }
 
 void
+GarnetSyntheticTraffic::traceLogReady(long global_tid, int rec_local)
+{
+    auto &s = m_trace_sends[m_trace_pos.at(rec_local)];
+    if (s.ready_logged) {
+        return;
+    }
+    s.ready_logged = true;
+    if (m_trace_sched) {
+        m_trace_sched->event("READY", global_tid, traceRouterId, "ready");
+    }
+}
+
+void
 GarnetSyntheticTraffic::traceDumpStall()
 {
     if (!traceMode) return;
@@ -357,11 +375,11 @@ GarnetSyntheticTraffic::traceDumpStall()
         if (s.pending > 0) waiting_dep++;
         else waiting_rb++;
     }
-    inform("%s: trace stall dump: head %d/%d done %d flight %d "
-           "wait-dep %d wait-ruleb %d inflight %d (msg %d)",
-           name(), (int)m_trace_head, (int)m_trace_sends.size(), done,
-           flight, waiting_dep, waiting_rb, m_trace_inflight,
-           m_trace_inflight_msg);
+    int issued = done + flight;
+    inform("%s: trace stall dump: issued %d/%d done %d flight %d "
+           "wait-dep %d wait-ruleb %d",
+           name(), issued, (int)m_trace_sends.size(), done,
+           flight, waiting_dep, waiting_rb);
     // the first two non-done records with their blockers
     int shown = 0;
     for (auto &s : m_trace_sends) {
@@ -379,6 +397,21 @@ bool
 GarnetSyntheticTraffic::traceSendPkt(int rec_local, long global_tid,
                                      const char *how)
 {
+    // FIRST_TRY: the record passed the model gates (after/rule-b/seq) and
+    // reached the send attempt -- any delay from here to the successful
+    // ISSUE is NoC resource wait (T4r) in the attribution.  Heads only:
+    // legs have no TraceSend entry (their resource wait is derivable as
+    // ISSUE - LEG_DISPATCH from the existing events).
+    if (traceMode && m_trace_pos.count(rec_local)) {
+        auto &ts = m_trace_sends[m_trace_pos.at(rec_local)];
+        if (!ts.first_try_logged) {
+            ts.first_try_logged = true;
+            if (m_trace_sched) {
+                m_trace_sched->event("FIRST_TRY", global_tid, traceRouterId,
+                                     "go");
+            }
+        }
+    }
     PacketPtr pkt = makeTracePkt(rec_local, global_tid);
     DPRINTF(GarnetSyntheticTraffic, "trace issue rec %d tid %ld\n",
             rec_local, global_tid);
@@ -386,13 +419,9 @@ GarnetSyntheticTraffic::traceSendPkt(int rec_local, long global_tid,
         DPRINTF(GarnetSyntheticTraffic, "trace issue rec %d RETRY\n",
                 rec_local);
         retryPkt = pkt;    // RubyPort will retry (recvReqRetry)
-        // m_trace_sends is seq-sorted: record index != position.  The
-        // failed send was either the current head (not yet advanced) or
-        // the front leg (not yet popped) -- classify against the head.
+        // the caller's tag tells head-send vs leg outright
         m_trace_retry_kind =
-            (m_trace_head < m_trace_sends.size() &&
-             m_trace_sends[m_trace_head].global == global_tid)
-            ? RETRY_HEAD : RETRY_LEG;
+            (how[0] == 'l') ? RETRY_LEG : RETRY_SEND;
         m_trace_retry_tid = global_tid;
         return false;
     }
@@ -916,15 +945,11 @@ GarnetSyntheticTraffic::doRetry()
                                      traceRouterId, "retry");
             }
             retryPkt = nullptr;
-            if (m_trace_retry_kind == RETRY_HEAD) {
-                // the held head is m_trace_head (it never advanced)
-                assert(m_trace_head < m_trace_sends.size());
-                auto &s = m_trace_sends[m_trace_head];
+            if (m_trace_retry_kind == RETRY_SEND) {
+                int rl = (int)(m_trace_retry_tid - m_trace_rep_base);
+                auto &s = m_trace_sends[m_trace_pos.at(rl)];
                 assert(s.global == m_trace_retry_tid);
                 s.state = TraceSend::FLIGHT;
-                m_trace_inflight++;
-                m_trace_inflight_msg = s.msg;
-                m_trace_head++;
             } else if (m_trace_retry_kind == RETRY_LEG) {
                 assert(!m_trace_legs.empty());
                 m_trace_legs.pop_front();

@@ -1,5 +1,15 @@
 # trace 回放实现规格 —— noc-trace-4x6 → gem5 NULL_AIGCIC_NOC
 
+> **分支说明(trace-replay-segmented)**:本分支在 F10/F12 之上实现**分段模式**
+> 作为实验替代:任何"弯"(方向改变/折返)都把包断开——到达流 EJECT 到本地 dir,
+> 延续由本 router 的 tester 以新包重注入(leg);网内改写只发生在**同方向直行**上。
+> 因此任何包在网内**从不换轴**,列上/列下/行东/行西四个方向的信道集互不相交且
+> 各自成链 → 信道依赖图为四个 DAG 的并 → **单 VC(vcs_per_vnet=1)即无死锁,
+> VC 类机制整体不再需要**(hook 全部 cls=-1,NI 注入不再强制 offset-0)。
+> 编译器的类 CDG 检查保留且仍健全(运行时图 ⊆ 被检图)。运行时自检:跨弯改写
+> 即 panic。实测代价:弯处从 cut-through(≈0)变为端点往返,四窗口 makespan
+> +12~17%(中位时延 +1~2 cyc,MAX 不变);换来 vcs=1 可运行与 hook/VA 简化。
+
 > **文档地位**:本文件是 trace 回放功能的**唯一权威实现规格**,由设计讨论定稿。
 > 实现者(AI agent 或人)必须严格遵循;任何偏离(机制、规则、口径)都必须先经
 > 用户明确批准并回写进本文件。与代码冲突时,以本文为准。
@@ -104,9 +114,10 @@ compile_trace_plan.py ──► <window>/_plan/plan.txt (只读,运行时加载)
   InputUnit **计满(tail flit 到达,逐 flit 计数)**。sequencer 本地完成、末 flit 离开
   本地 NI、整条消息端到端送达,都**不是**完成事件。
 - **F3 规则 a**:注入串行化链**只覆盖 send rec**(T/R);relay 不参与。
-- **F4 规则 b**:READY 的 send rec 准出条件 = 本 router **所有在途 send rec 已
-  ARRIVAL_DONE**,同 msg 豁免(在途集合全为同 msg 时可放行)。不变式:在途集合
-  恒为单一 msg 的"burst 组";换 msg 必须整组落地。
+- **F4 规则 b(对外名称:整组串行注入纪律)**:READY 的 send rec 准出条件 =
+  本 router **所有在途 send rec 已 ARRIVAL_DONE**,同 msg 豁免(在途集合全为
+  同 msg 时可放行)。不变式:在途集合恒为单一 msg 的"burst 组";换 msg 必须
+  整组落地。
 - **F5 规则 c**:汇聚点**不享受**同 msg 豁免——多成员组须等**全部成员 burst 计满**
   (每个成员的 ARRIVAL_DONE)且延续的外部 after 清零,延续**恰好实现一次**。
 - **F6 head 改写的准许**:仅限"单成员组且外部 after 已清零";带外部依赖的单成员、

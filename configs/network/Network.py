@@ -93,6 +93,22 @@ def define_options(parser):
             inside garnet network.""",
     )
     parser.add_argument(
+        "--buffers-per-data-vc",
+        action="store",
+        type=int,
+        default=4,
+        help="""flit buffers per VC on data-typed vnets (credit count;
+            garnet network).""",
+    )
+    parser.add_argument(
+        "--buffers-per-ctrl-vc",
+        action="store",
+        type=int,
+        default=1,
+        help="""flit buffers per VC on ctrl-typed vnets (credit count;
+            garnet network).""",
+    )
+    parser.add_argument(
         "--routing-algorithm",
         action="store",
         type=int,
@@ -181,6 +197,11 @@ def init_network(options, network, InterfaceClass):
     if options.network == "garnet":
         network.num_rows = options.mesh_rows
         network.vcs_per_vnet = options.vcs_per_vnet
+        # getattr fallback: not every driver's parser defines these
+        network.buffers_per_data_vc = getattr(
+            options, "buffers_per_data_vc", 4)
+        network.buffers_per_ctrl_vc = getattr(
+            options, "buffers_per_ctrl_vc", 1)
         network.ni_flit_size = options.link_width_bits / 8
         network.routing_algorithm = options.routing_algorithm
         network.garnet_deadlock_threshold = options.garnet_deadlock_threshold

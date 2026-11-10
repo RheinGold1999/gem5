@@ -188,6 +188,8 @@ class GarnetSyntheticTraffic : public ClockedObject
         int bytes = 0;
         int pending = 0;    // external after deps not yet cleared
         int pending0 = 0;   // load-time value (re-armed per window)
+        bool ready_logged = false;   // READY event logged (per window)
+        bool first_try_logged = false; // FIRST_TRY event logged
         enum State { WAIT, READY, FLIGHT, DONE } state = WAIT;
     };
     bool traceMode = false;
@@ -199,11 +201,10 @@ class GarnetSyntheticTraffic : public ClockedObject
     std::unordered_map<int, int> m_plan_next;     // rec idx -> next router
     std::unordered_map<int, int> m_plan_bytes;    // rec idx -> burst bytes
     std::unordered_map<int, int> m_dbg_notify;    // dbg: notify count per rec
-    size_t m_trace_head = 0;               // first not-yet-issued record
     int m_trace_inflight = 0;              // issued, not yet arrival-done
-    int m_trace_inflight_msg = -1;
+    int m_trace_inflight_msg = -1;         // in-flight burst group's msg
     std::deque<long> m_trace_legs;         // dynamic branch legs (global ids)
-    enum { RETRY_NONE, RETRY_HEAD, RETRY_LEG } m_trace_retry_kind = RETRY_NONE;
+    enum { RETRY_NONE, RETRY_SEND, RETRY_LEG } m_trace_retry_kind = RETRY_NONE;
     long m_trace_retry_tid = -1;
 
     void initTracePlan();
@@ -216,6 +217,7 @@ class GarnetSyntheticTraffic : public ClockedObject
   public:
     // trace event log: the scheduler pushes itself in at init
     void setTraceScheduler(ruby::TraceScheduler *s) { m_trace_sched = s; }
+    void traceLogReady(long global_tid, int rec_local);
 
   private:
     ruby::TraceScheduler *m_trace_sched = nullptr;
@@ -228,6 +230,13 @@ class GarnetSyntheticTraffic : public ClockedObject
             m_dbg_notify[rec]++;
             auto &s = m_trace_sends[m_trace_pos.at(rec)];
             s.pending--;
+            if (s.pending == 0 && !s.ready_logged) {
+                // deps cleared: the record becomes startable (READY);
+                // any further delay to its ISSUE is rule-b/seq (T2) or
+                // NoC resource wait (T4r) -- split in the attribution
+                // (logged from the .cc: TraceScheduler is incomplete here)
+                traceLogReady(m_trace_rep_base + rec, rec);
+            }
             if (s.pending < 0) {
                 warn("%s: rec %d pending went negative (%d notifies)",
                      name(), rec, m_dbg_notify[rec]);
@@ -237,8 +246,7 @@ class GarnetSyntheticTraffic : public ClockedObject
     void traceSelfDone(int rec)
     {
         if (!traceMode) return;
-        auto &s = m_trace_sends[m_trace_pos.at(rec)];
-        s.state = TraceSend::DONE;
+        m_trace_sends[m_trace_pos.at(rec)].state = TraceSend::DONE;
         if (--m_trace_inflight == 0) m_trace_inflight_msg = -1;
     }
     void traceWindowStart(long rep_base);
