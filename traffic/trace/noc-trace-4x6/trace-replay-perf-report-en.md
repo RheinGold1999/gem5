@@ -17,11 +17,13 @@ a per-router `seq` issue order. Sizes: 4210/3425/10205/9420 records,
   monotone, deadlock-free without VC classes) and exact links.csv
   reconciliation as mandatory gates;
 - Transport: the tester injects write requests (`RELAY_PUTX`, silently
-  relayed, no responses) following the after dependencies and the
-  **whole-group serial injection discipline** (each router's injection
-  engine has at most one message's burst group in flight; bursts within a
-  group pipeline, switching groups waits until the current group fully
-  lands). On head arrival a router hook rewrites the destination
+  relayed, no responses) gated by the after dependencies.  Injection is
+  **out-of-order**: a record issues as soon as its own after deps are
+  satisfied -- the trace's per-router seq order is not maintained -- but
+  the **whole-group serial injection discipline** is kept (each router's
+  injection engine has at most one message's burst group in flight;
+  bursts within a group pipeline, switching groups waits until the
+  current group fully lands). On head arrival a router hook rewrites the destination
   in-network for straight continuations (same branch, same packet); bends,
   merges and after-holds eject the stream and the local tester re-injects
   the continuation as a fresh leg; destination copies are virtual

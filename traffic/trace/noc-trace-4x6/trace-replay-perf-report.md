@@ -16,10 +16,10 @@ unicast / 多播树 / 在网归约树 / allreduce;记录间有 `after` 依赖 DA
 **回放实现**(hop-level in-network replay):
 - plan 编译器:trace → 逐 router 的中继计划;直行/弯分类;信道依赖图
   (包为单轴单调,无 VC 类即无死锁)与 links.csv 精确对账为强制门;
-- 传输:tester 按 after 依赖与**整组串行注入纪律**(每个 router 的注入引擎
-  同一时刻只发一个消息的 burst 组;组内流水并行,换组须等当前组全部落地)
-  注入写请求(`RELAY_PUTX`,静默中继,
-  无响应);包头到达路由器后由钩子**网内改写**直行延续(同分支同包),
+- 传输:tester 按 after 依赖注入写请求(`RELAY_PUTX`,静默中继,无响应)。
+  注入为**乱序**:rec 在自身 after 满足后即可发出,不保持 trace 的
+  per-router seq 顺序;但保留**整组串行注入纪律**(每个 router 的注入引擎
+  同一时刻只发一个消息的 burst 组;组内流水并行,换组须等当前组全部落地)。包头到达路由器后由钩子**网内改写**直行延续(同分支同包),
   弯/汇聚/分支处 EJECT + 由本 router tester 重注入延续 leg;
   目的副本为虚拟投递(不计 flit);
 - 调度:TraceScheduler 持有 after 因果状态与到达完成,链式窗口重复;

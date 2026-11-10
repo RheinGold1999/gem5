@@ -1,6 +1,9 @@
 # DRAFT v2:关键路径四类归因 —— 上层依赖 vs NoC 性能
 
 > 数据:分段模式分支,`data-buffer=4, vcs=2`,四窗口 repeat=2 事件日志(rep 0)。
+> 注:本 draft 的 §2 表在**组串行+seq** 注入语义下测得;当前实现为
+> **乱序+规则 b**(语义变更见 trace-replay-perf-report.md §1),最终数字
+> 以 perf report §4 为准(方法与本 draft 相同)。
 > 方法:事件图 + 关键路径回溯(`tools/trace_plan/analyze_critical_path.py`),
 > 链上时长之和精确等于 makespan(已验证)。S 已按 READY/FIRST_TRY 拆分,
 > 网内传输已按 (字节档, 边类型) 的 P10 基线拆出拥塞超额。
